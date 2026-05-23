@@ -12,6 +12,7 @@
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
+    "verify:persistence": "node scripts/verify-note-persistence.mjs",
     "postinstall": "wxt prepare"
   },
   "dependencies": {

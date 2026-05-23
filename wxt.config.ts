@@ -11,6 +11,7 @@ export default defineConfig({
     name: 'Ode AI Research Assistant',
     description: 'A Chromium side panel research assistant for AI chat, fact checks, notes, and citations.',
     permissions: ['sidePanel', 'storage', 'activeTab', 'scripting'],
+    host_permissions: ['http://*/*', 'https://*/*'],
     action: {
       default_title: 'Open Ode Research',
     },
