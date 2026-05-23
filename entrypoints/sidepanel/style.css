@@ -31,7 +31,7 @@ textarea {
 .sidepanel-shell {
   background: #ffffff;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto 1fr auto;
   height: 100vh;
   min-height: 100vh;
 }
@@ -59,6 +59,14 @@ h1 {
   margin: 0;
 }
 
+h2 {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.3;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .settings-button,
 .input-bar button {
   background: #0f172a;
@@ -77,6 +85,62 @@ h1 {
   background: #ffffff;
   border-color: #cbd5e1;
   color: #334155;
+}
+
+.context-box {
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.context-header {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+}
+
+.metadata-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.metadata-list div {
+  display: grid;
+  gap: 2px;
+}
+
+.metadata-list dt {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.metadata-list dd {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
+  max-height: 34px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.context-box blockquote {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 96px;
+  overflow-y: auto;
+  padding: 9px 10px;
 }
 
 .chat-area {

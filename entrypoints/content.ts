@@ -1,3 +1,5 @@
+import { scrapePageMetadata } from '@/lib/pageMetadata';
+
 export default defineContentScript({
   matches: ['http://*/*', 'https://*/*'],
   main() {
@@ -77,9 +79,21 @@ export default defineContentScript({
       actionBar.style.left = `${left}px`;
     };
 
+    const getSelectedText = () => window.getSelection()?.toString().trim() ?? '';
+
+    const sendSelectionContext = () => {
+      if (selectedText.length === 0) return;
+
+      chrome.runtime.sendMessage({
+        type: 'selection-context',
+        text: selectedText,
+        metadata: scrapePageMetadata(),
+      });
+    };
+
     const updateSelection = () => {
       const selection = window.getSelection();
-      selectedText = selection?.toString().trim() ?? '';
+      selectedText = getSelectedText();
 
       if (!selection || selection.rangeCount === 0 || selectedText.length === 0) {
         hideBar();
@@ -91,6 +105,13 @@ export default defineContentScript({
 
     document.addEventListener('selectionchange', () => {
       window.setTimeout(updateSelection, 0);
+    });
+
+    document.addEventListener('mouseup', () => {
+      window.setTimeout(() => {
+        updateSelection();
+        sendSelectionContext();
+      }, 0);
     });
 
     document.addEventListener('scroll', hideBar, { passive: true });
@@ -105,6 +126,7 @@ export default defineContentScript({
         type: 'selection-action',
         action,
         text: selectedText,
+        metadata: scrapePageMetadata(),
       });
     });
   },

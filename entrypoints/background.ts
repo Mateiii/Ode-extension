@@ -15,6 +15,18 @@ export default defineBackground(() => {
         type: 'sidepanel-selection-action',
         action: message.action,
         text: message.text,
+        metadata: message.metadata,
+        tabId: sender.tab?.id,
+        url: sender.tab?.url,
+        title: sender.tab?.title,
+      });
+    }
+
+    if (message.type === 'selection-context') {
+      chrome.runtime.sendMessage({
+        type: 'sidepanel-selection-context',
+        text: message.text,
+        metadata: message.metadata,
         tabId: sender.tab?.id,
         url: sender.tab?.url,
         title: sender.tab?.title,
