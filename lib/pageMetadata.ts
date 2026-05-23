@@ -2,6 +2,8 @@ export type PageMetadata = {
   title: string;
   author: string;
   canonicalUrl: string;
+  publishedDate: string;
+  siteName: string;
 };
 
 const getMetaContent = (selectors: string[]) => {
@@ -36,9 +38,26 @@ export function scrapePageMetadata(): PageMetadata {
     getMetaContent(['meta[property="og:url"]']) ||
     window.location.href;
 
+  const publishedDate = getMetaContent([
+    'meta[property="article:published_time"]',
+    'meta[name="citation_publication_date"]',
+    'meta[name="date"]',
+    'meta[name="dc.date"]',
+    'meta[name="DC.date.issued"]',
+  ]);
+
+  const siteName =
+    getMetaContent([
+      'meta[property="og:site_name"]',
+      'meta[name="application-name"]',
+      'meta[name="twitter:site"]',
+    ]) || window.location.hostname;
+
   return {
     title,
     author,
     canonicalUrl,
+    publishedDate,
+    siteName,
   };
 }

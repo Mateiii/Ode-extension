@@ -1,8 +1,14 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { Send, Settings } from 'lucide-react';
+import { BookOpen, Clipboard, FileText, Send, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import type { PageMetadata } from '@/lib/pageMetadata';
+import {
+  formatCitation,
+  getQuickNotes,
+  QUICK_NOTES_STORAGE_KEY,
+  type QuickNote,
+} from '@/lib/researchStorage';
 
 type ChatMessage = {
   id: string;
@@ -15,6 +21,7 @@ type SelectionMessage = {
   action: 'ask-ai' | 'fact-check' | 'save-note';
   text: string;
   metadata?: PageMetadata;
+  note?: QuickNote;
   title?: string;
   url?: string;
 };
@@ -28,11 +35,12 @@ type SelectionContextMessage = {
 };
 
 type RuntimeMessage = SelectionMessage | SelectionContextMessage;
+type ActiveTab = 'chat' | 'notes' | 'citations';
 
 const actionLabels: Record<SelectionMessage['action'], string> = {
   'ask-ai': 'Ask AI',
   'fact-check': 'Fact Check',
-  'save-note': 'Save Note',
+  'save-note': 'Save to Notes',
 };
 
 const initialMessages: ChatMessage[] = [
@@ -46,8 +54,26 @@ const initialMessages: ChatMessage[] = [
 function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [context, setContext] = useState<SelectionContextMessage | null>(null);
+  const [notes, setNotes] = useState<QuickNote[]>([]);
+  const [activeTab, setActiveTab] = useState<ActiveTab>('chat');
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    getQuickNotes().then(setNotes);
+
+    const listener = (
+      changes: Record<string, { oldValue?: unknown; newValue?: unknown }>,
+      areaName: string,
+    ) => {
+      if (areaName !== 'local' || !changes[QUICK_NOTES_STORAGE_KEY]) return;
+
+      setNotes((changes[QUICK_NOTES_STORAGE_KEY].newValue as QuickNote[] | undefined) ?? []);
+    };
+
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
+  }, []);
 
   useEffect(() => {
     const listener = (message: RuntimeMessage) => {
@@ -66,6 +92,20 @@ function App() {
         url: message.url,
       });
 
+      if (message.action === 'save-note') {
+        if (message.note) {
+          const savedNote = message.note;
+          setNotes((current) => {
+            if (current.some((note) => note.id === savedNote.id)) return current;
+            return [savedNote, ...current];
+          });
+        } else {
+          getQuickNotes().then(setNotes);
+        }
+
+        setActiveTab('notes');
+      }
+
       setMessages((current) => [
         ...current,
         {
@@ -77,7 +117,9 @@ function App() {
           id: crypto.randomUUID(),
           role: 'assistant',
           content:
-            message.action === 'fact-check'
+            message.action === 'save-note'
+              ? 'Saved to Quick Notes.'
+              : message.action === 'fact-check'
               ? 'Fact-check agent wiring is reserved for the backend phase. The selected claim is ready to send.'
               : 'Selection received. Backend AI handling will be connected in the next phase.',
         },
@@ -117,6 +159,26 @@ function App() {
     setInput('');
   };
 
+  const currentCitationFallback = {
+    title: context?.title,
+    url: context?.url,
+  };
+
+  const citationRows = [
+    {
+      label: 'APA',
+      value: formatCitation('apa', context?.metadata, currentCitationFallback),
+    },
+    {
+      label: 'MLA',
+      value: formatCitation('mla', context?.metadata, currentCitationFallback),
+    },
+  ];
+
+  const copyText = (value: string) => {
+    navigator.clipboard?.writeText(value);
+  };
+
   return (
     <main className="sidepanel-shell">
       <header className="panel-header">
@@ -153,14 +215,90 @@ function App() {
         </blockquote>
       </section>
 
-      <section ref={scrollRef} className="chat-area" aria-label="Research chat">
-        {messages.map((message) => (
-          <article className={`message ${message.role}`} key={message.id}>
-            <span>{message.role === 'assistant' ? 'Øde' : 'You'}</span>
-            <p>{message.content}</p>
-          </article>
-        ))}
-      </section>
+      <nav className="panel-tabs" aria-label="Sidepanel sections">
+        <button
+          className={activeTab === 'chat' ? 'active' : ''}
+          onClick={() => setActiveTab('chat')}
+          type="button"
+        >
+          <BookOpen aria-hidden="true" size={15} />
+          Chat
+        </button>
+        <button
+          className={activeTab === 'notes' ? 'active' : ''}
+          onClick={() => setActiveTab('notes')}
+          type="button"
+        >
+          <FileText aria-hidden="true" size={15} />
+          Notes
+        </button>
+        <button
+          className={activeTab === 'citations' ? 'active' : ''}
+          onClick={() => setActiveTab('citations')}
+          type="button"
+        >
+          <Clipboard aria-hidden="true" size={15} />
+          Citations
+        </button>
+      </nav>
+
+      {activeTab === 'chat' ? (
+        <section ref={scrollRef} className="chat-area" aria-label="Research chat">
+          {messages.map((message) => (
+            <article className={`message ${message.role}`} key={message.id}>
+              <span>{message.role === 'assistant' ? 'Øde' : 'You'}</span>
+              <p>{message.content}</p>
+            </article>
+          ))}
+        </section>
+      ) : null}
+
+      {activeTab === 'notes' ? (
+        <section className="notes-area" aria-label="Quick notes">
+          {notes.length === 0 ? (
+            <p className="empty-state">Select text on a page and choose Save to Notes.</p>
+          ) : (
+            notes.map((note) => (
+              <article className="note-item" key={note.id}>
+                <p>{note.text}</p>
+                <footer>
+                  <span>{note.metadata?.title || note.title || 'Untitled page'}</span>
+                  <time dateTime={note.createdAt}>
+                    {new Intl.DateTimeFormat('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    }).format(new Date(note.createdAt))}
+                  </time>
+                </footer>
+              </article>
+            ))
+          )}
+        </section>
+      ) : null}
+
+      {activeTab === 'citations' ? (
+        <section className="citations-area" aria-label="Citations">
+          {citationRows.map((citation) => (
+            <article className="citation-item" key={citation.label}>
+              <div>
+                <h3>{citation.label}</h3>
+                <p>{citation.value}</p>
+              </div>
+              <Button
+                aria-label={`Copy ${citation.label} citation`}
+                onClick={() => copyText(citation.value)}
+                size="icon"
+                type="button"
+                variant="outline"
+              >
+                <Clipboard aria-hidden="true" size={15} />
+              </Button>
+            </article>
+          ))}
+        </section>
+      ) : null}
 
       <form className="input-bar" onSubmit={handleSubmit}>
         <Textarea

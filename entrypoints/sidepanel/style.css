@@ -31,7 +31,7 @@ textarea {
 .sidepanel-shell {
   background: #ffffff;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto auto 1fr auto;
   height: 100vh;
   min-height: 100vh;
 }
@@ -150,6 +150,122 @@ h2 {
   gap: 12px;
   overflow-y: auto;
   padding: 16px;
+}
+
+.panel-tabs {
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 8px;
+}
+
+.panel-tabs button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #475569;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 8px;
+}
+
+.panel-tabs button:hover,
+.panel-tabs button.active {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+.notes-area,
+.citations-area {
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.empty-state {
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 14px;
+  text-align: center;
+}
+
+.note-item,
+.citation-item {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.note-item {
+  display: grid;
+  gap: 10px;
+}
+
+.note-item p,
+.citation-item p {
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.note-item footer {
+  align-items: center;
+  color: #64748b;
+  display: flex;
+  font-size: 11px;
+  gap: 10px;
+  justify-content: space-between;
+  line-height: 1.3;
+}
+
+.note-item footer span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-item footer time {
+  flex: 0 0 auto;
+}
+
+.citation-item {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr auto;
+}
+
+.citation-item h3 {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.2;
+  margin: 0 0 6px;
+}
+
+.citation-item button {
+  border-radius: 8px;
+  min-height: 34px;
+  width: 34px;
 }
 
 .message {
