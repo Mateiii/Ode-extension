@@ -7,6 +7,7 @@ type ChromeMessageListener = (
       url?: string;
     };
   },
+  sendResponse: (response?: unknown) => void,
 ) => void | boolean;
 
 declare const chrome: {
@@ -21,7 +22,12 @@ declare const chrome: {
       addListener(listener: ChromeMessageListener): void;
       removeListener(listener: ChromeMessageListener): void;
     };
-    sendMessage(message: unknown): void;
+    sendMessage(message: unknown, callback?: () => void): void;
+    lastError: { message?: string } | undefined;
+  };
+  tabs: {
+    query(queryInfo: { active?: boolean; currentWindow?: boolean }, callback: (tabs: Array<{ id?: number; title?: string; url?: string }>) => void): void;
+    sendMessage(tabId: number, message: unknown, callback: (response?: unknown) => void): void;
   };
   storage: {
     local: {
@@ -30,6 +36,7 @@ declare const chrome: {
         callback: (items: Record<string, unknown>) => void,
       ): void;
       set(items: Record<string, unknown>, callback?: () => void): void;
+      remove(keys: string[] | string, callback?: () => void): void;
     };
     onChanged: {
       addListener(
@@ -40,7 +47,14 @@ declare const chrome: {
       ): void;
     };
   };
+  scripting: {
+    executeScript<T>(
+      injection: { target: { tabId: number }; func: () => T },
+      callback?: (results: Array<{ result: T }>) => void,
+    ): Promise<Array<{ result: T }>>;
+  };
   sidePanel: {
+    open(options: { tabId: number }): Promise<void>;
     setPanelBehavior(options: { openPanelOnActionClick: boolean }): void;
   };
 };

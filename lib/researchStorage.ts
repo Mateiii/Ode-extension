@@ -4,14 +4,24 @@ export type QuickNote = {
   id: string;
   text: string;
   createdAt: string;
+  folderId?: string;
+  kind?: 'selection' | 'page' | 'manual';
   metadata?: PageMetadata;
   title?: string;
   url?: string;
 };
 
+export type NoteFolder = {
+  id: string;
+  name: string;
+  createdAt: string;
+};
+
 export type CitationStyle = 'apa' | 'mla';
 
 export const QUICK_NOTES_STORAGE_KEY = 'quickNotes';
+export const NOTE_FOLDERS_STORAGE_KEY = 'noteFolders';
+export const DEFAULT_FOLDER_ID = 'default';
 
 const getRandomId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -34,10 +44,25 @@ const storageSet = (items: Record<string, unknown>): Promise<void> =>
   });
 
 export const getQuickNotes = () => storageGet<QuickNote[]>(QUICK_NOTES_STORAGE_KEY, []);
+export const getNoteFolders = async () => {
+  const folders = await storageGet<NoteFolder[]>(NOTE_FOLDERS_STORAGE_KEY, []);
+  if (folders.length > 0) return folders;
+
+  const defaultFolder: NoteFolder = {
+    id: DEFAULT_FOLDER_ID,
+    name: 'General',
+    createdAt: new Date().toISOString(),
+  };
+
+  await storageSet({ [NOTE_FOLDERS_STORAGE_KEY]: [defaultFolder] });
+  return [defaultFolder];
+};
 
 export async function saveQuickNote(input: Omit<QuickNote, 'id' | 'createdAt'>) {
   const note: QuickNote = {
+    kind: 'selection',
     ...input,
+    folderId: input.folderId ?? DEFAULT_FOLDER_ID,
     id: getRandomId(),
     createdAt: new Date().toISOString(),
   };
@@ -48,6 +73,44 @@ export async function saveQuickNote(input: Omit<QuickNote, 'id' | 'createdAt'>) 
   });
 
   return note;
+}
+
+export async function createNoteFolder(name: string) {
+  const folder: NoteFolder = {
+    id: getRandomId(),
+    name: name.trim() || 'Untitled folder',
+    createdAt: new Date().toISOString(),
+  };
+  const folders = await getNoteFolders();
+
+  await storageSet({
+    [NOTE_FOLDERS_STORAGE_KEY]: [...folders, folder],
+  });
+
+  return folder;
+}
+
+export async function deleteQuickNote(id: string) {
+  const notes = await getQuickNotes();
+  await storageSet({
+    [QUICK_NOTES_STORAGE_KEY]: notes.filter((note) => note.id !== id),
+  });
+}
+
+export async function moveQuickNote(id: string, folderId: string) {
+  const notes = await getQuickNotes();
+  await storageSet({
+    [QUICK_NOTES_STORAGE_KEY]: notes.map((note) =>
+      note.id === id ? { ...note, folderId } : note,
+    ),
+  });
+}
+
+export async function savePageNote(input: Omit<QuickNote, 'id' | 'createdAt' | 'kind'>) {
+  return saveQuickNote({
+    ...input,
+    kind: 'page',
+  });
 }
 
 const clean = (value?: string) => value?.trim() || '';
