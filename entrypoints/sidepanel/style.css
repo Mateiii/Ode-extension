@@ -338,32 +338,118 @@ h2 {
   padding-bottom: 2px;
 }
 
-.folder-list button {
+.folder-chip {
   align-items: center;
   background: #ffffff;
   border: 1px solid #cbd5e1;
   border-radius: 999px;
   color: #334155;
-  cursor: pointer;
   display: inline-flex;
   flex: 0 0 auto;
-  font-size: 12px;
-  font-weight: 700;
-  gap: 7px;
   min-height: 30px;
-  padding: 0 9px;
+  overflow: hidden;
 }
 
-.folder-list button.active {
+.folder-chip.active {
   background: #e0f2fe;
   border-color: #7dd3fc;
   color: #075985;
 }
 
-.folder-list small {
+.folder-select {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 4px 0 11px;
+}
+
+.folder-select small {
   color: inherit;
   font-size: 11px;
   opacity: 0.75;
+}
+
+.folder-delete {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  opacity: 0.6;
+  padding: 0 8px 0 2px;
+}
+
+.folder-delete:hover {
+  color: #b91c1c;
+  opacity: 1;
+}
+
+.modal-overlay {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 60;
+}
+
+.modal {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.3);
+  max-width: 320px;
+  padding: 18px;
+  width: 100%;
+}
+
+.modal h2 {
+  color: #0f172a;
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
+.modal p {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0 0 16px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.modal-actions button {
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 34px;
+  padding: 0 14px;
+}
+
+.modal-danger {
+  background: #dc2626 !important;
+  border-color: #dc2626 !important;
+  color: #ffffff !important;
+}
+
+.modal-danger:hover {
+  background: #b91c1c !important;
 }
 
 .empty-state {

@@ -106,6 +106,21 @@ export async function moveQuickNote(id: string, folderId: string) {
   });
 }
 
+// Deletes a folder and reassigns its notes to the default folder so notes are
+// never lost. The default folder itself cannot be deleted.
+export async function deleteNoteFolder(id: string) {
+  if (id === DEFAULT_FOLDER_ID) return;
+
+  const [folders, notes] = await Promise.all([getNoteFolders(), getQuickNotes()]);
+
+  await storageSet({
+    [NOTE_FOLDERS_STORAGE_KEY]: folders.filter((folder) => folder.id !== id),
+    [QUICK_NOTES_STORAGE_KEY]: notes.map((note) =>
+      (note.folderId || DEFAULT_FOLDER_ID) === id ? { ...note, folderId: DEFAULT_FOLDER_ID } : note,
+    ),
+  });
+}
+
 export async function savePageNote(input: Omit<QuickNote, 'id' | 'createdAt' | 'kind'>) {
   return saveQuickNote({
     ...input,
