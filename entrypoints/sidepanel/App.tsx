@@ -11,6 +11,7 @@ import {
   Send,
   Settings,
   Trash2,
+  X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -19,6 +20,7 @@ import type { PageMetadata } from '@/lib/pageMetadata';
 import {
   formatCitation,
   createNoteFolder,
+  deleteNoteFolder,
   deleteQuickNote,
   moveQuickNote,
   DEFAULT_FOLDER_ID,
@@ -105,6 +107,7 @@ function App() {
   const [noteStatus, setNoteStatus] = useState('');
   const [isTakingPageNotes, setIsTakingPageNotes] = useState(false);
   const [collapsedNotes, setCollapsedNotes] = useState<Set<string>>(new Set());
+  const [folderPendingDelete, setFolderPendingDelete] = useState<NoteFolder | null>(null);
   const [toast, setToast] = useState('');
   const handledActionKeysRef = useRef<Set<string>>(new Set());
   const toastTimerRef = useRef<number | undefined>(undefined);
@@ -365,6 +368,21 @@ function App() {
     setNewFolderName('');
   };
 
+  const confirmDeleteFolder = async () => {
+    const folder = folderPendingDelete;
+    if (!folder || folder.id === DEFAULT_FOLDER_ID) {
+      setFolderPendingDelete(null);
+      return;
+    }
+
+    await deleteNoteFolder(folder.id);
+    if (selectedFolderId === folder.id) {
+      setSelectedFolderId(DEFAULT_FOLDER_ID);
+    }
+    setFolderPendingDelete(null);
+    showToast(`Folder “${folder.name}” deleted.`);
+  };
+
   const toggleNoteCollapsed = (noteId: string) => {
     setCollapsedNotes((current) => {
       const next = new Set(current);
@@ -596,17 +614,32 @@ function App() {
           <div className="folder-list" aria-label="Note folders">
             {folders.map((folder) => {
               const count = notes.filter((note) => (note.folderId || DEFAULT_FOLDER_ID) === folder.id).length;
+              const isDefault = folder.id === DEFAULT_FOLDER_ID;
 
               return (
-                <button
-                  className={folder.id === selectedFolderId ? 'active' : ''}
+                <div
+                  className={`folder-chip ${folder.id === selectedFolderId ? 'active' : ''}`}
                   key={folder.id}
-                  onClick={() => setSelectedFolderId(folder.id)}
-                  type="button"
                 >
-                  <span>{folder.name}</span>
-                  <small>{count}</small>
-                </button>
+                  <button
+                    className="folder-select"
+                    onClick={() => setSelectedFolderId(folder.id)}
+                    type="button"
+                  >
+                    <span>{folder.name}</span>
+                    <small>{count}</small>
+                  </button>
+                  {isDefault ? null : (
+                    <button
+                      aria-label={`Delete folder ${folder.name}`}
+                      className="folder-delete"
+                      onClick={() => setFolderPendingDelete(folder)}
+                      type="button"
+                    >
+                      <X aria-hidden="true" size={13} />
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -745,6 +778,36 @@ function App() {
           Send
         </Button>
       </form>
+
+      {folderPendingDelete ? (
+        <div
+          className="modal-overlay"
+          onClick={() => setFolderPendingDelete(null)}
+          role="presentation"
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-folder-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="delete-folder-title">Delete folder?</h2>
+            <p>
+              “{folderPendingDelete.name}” will be deleted. Its notes will be moved to the General
+              folder, not deleted.
+            </p>
+            <div className="modal-actions">
+              <Button type="button" variant="outline" onClick={() => setFolderPendingDelete(null)}>
+                Cancel
+              </Button>
+              <Button type="button" className="modal-danger" onClick={confirmDeleteFolder}>
+                Delete folder
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {toast ? (
         <div className="toast" role="status" aria-live="polite">
