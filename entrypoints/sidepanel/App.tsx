@@ -107,12 +107,17 @@ function App() {
   const [newFolderName, setNewFolderName] = useState('');
   const [noteStatus, setNoteStatus] = useState('');
   const [isTakingPageNotes, setIsTakingPageNotes] = useState(false);
-  const [collapsedNotes, setCollapsedNotes] = useState<Set<string>>(new Set());
+  const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const [folderPendingDelete, setFolderPendingDelete] = useState<NoteFolder | null>(null);
   const [toast, setToast] = useState('');
   const handledActionKeysRef = useRef<Set<string>>(new Set());
   const toastTimerRef = useRef<number | undefined>(undefined);
+  const selectedFolderIdRef = useRef(selectedFolderId);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    selectedFolderIdRef.current = selectedFolderId;
+  }, [selectedFolderId]);
 
   const showToast = (text: string) => {
     setToast(text);
@@ -135,15 +140,98 @@ function App() {
               }
               return '';
             };
+
+            const byPrefix = /^(by|author|authored by|written by|posted by|from)\s*:?\s*/i;
+            const cleanAuthor = (s: string) => s.replace(byPrefix, '').replace(/\s+/g, ' ').trim();
+            const plausible = (s: string) => s.length > 1 && s.length < 100 && !/[{}[\]<>]/.test(s);
+
+            const scrapeAuthor = (): string => {
+              const fromMeta = getMeta(
+                'meta[name="author"]',
+                'meta[property="article:author"]',
+                'meta[name="citation_author"]',
+                'meta[name="byl"]',
+                'meta[name="dc.creator"]',
+                'meta[name="DC.creator"]',
+                'meta[name="dcterms.creator"]',
+                'meta[name="parsely-author"]',
+                'meta[name="sailthru.author"]',
+                'meta[name="twitter:creator"]',
+              );
+              if (fromMeta) return fromMeta;
+
+              for (const script of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
+                try {
+                  const data: unknown = JSON.parse((script as HTMLScriptElement).textContent ?? '');
+                  const items = Array.isArray(data) ? data : [data];
+                  for (const item of items) {
+                    if (typeof item !== 'object' || item === null) continue;
+                    const raw = (item as Record<string, unknown>).author;
+                    if (!raw) continue;
+                    let name = '';
+                    if (typeof raw === 'string') name = raw.trim();
+                    else if (!Array.isArray(raw) && typeof raw === 'object') name = String((raw as Record<string, unknown>).name ?? '').trim();
+                    else if (Array.isArray(raw) && raw.length > 0) {
+                      const first = raw[0];
+                      name = typeof first === 'string' ? first.trim() : String((first as Record<string, unknown>).name ?? '').trim();
+                    }
+                    if (name && plausible(name)) return name;
+                  }
+                } catch { /* skip malformed */ }
+              }
+
+              const relAuthor = document.querySelector<HTMLAnchorElement>('a[rel="author"]');
+              if (relAuthor) {
+                const t = cleanAuthor(relAuthor.textContent?.trim() ?? '');
+                if (plausible(t)) return t;
+              }
+
+              const itemAuthor = document.querySelector<HTMLElement>('[itemprop="author"]');
+              if (itemAuthor) {
+                const nameEl = itemAuthor.querySelector<HTMLElement>('[itemprop="name"]');
+                const t = cleanAuthor((nameEl ?? itemAuthor).textContent?.trim() ?? '');
+                if (plausible(t)) return t;
+              }
+
+              for (const sel of [
+                '[class*="byline"] [class*="author"]',
+                '[class*="byline"] [class*="name"]',
+                '[class*="author-name"]',
+                '[class*="authorName"]',
+                '[class*="author__name"]',
+                '[data-testid*="byline"]',
+                '[data-testid*="author"]',
+                '.author-name',
+                '.byline__name',
+                '.author',
+                '.byline',
+              ]) {
+                try {
+                  const el = document.querySelector<HTMLElement>(sel);
+                  if (!el) continue;
+                  const t = cleanAuthor(el.textContent?.replace(/\s+/g, ' ').trim() ?? '');
+                  if (plausible(t)) return t;
+                } catch { /* skip */ }
+              }
+
+              return '';
+            };
+
             return {
-              title: document.title.trim() || getMeta('meta[property="og:title"]', 'meta[name="twitter:title"]') || '',
-              author: getMeta('meta[name="author"]', 'meta[property="article:author"]', 'meta[name="citation_author"]') || '',
+              title: document.title.trim() || getMeta('meta[property="og:title"]', 'meta[name="twitter:title"]', 'meta[name="citation_title"]') || '',
+              author: scrapeAuthor(),
               canonicalUrl:
                 (document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null)?.href ||
                 getMeta('meta[property="og:url"]') ||
                 window.location.href,
-              publishedDate: getMeta('meta[property="article:published_time"]', 'meta[name="citation_publication_date"]', 'meta[name="date"]') || '',
-              siteName: getMeta('meta[property="og:site_name"]', 'meta[name="application-name"]') || window.location.hostname,
+              publishedDate: getMeta(
+                'meta[property="article:published_time"]',
+                'meta[name="citation_publication_date"]',
+                'meta[name="date"]',
+                'meta[name="dc.date"]',
+                'meta[name="DC.date.issued"]',
+              ) || '',
+              siteName: getMeta('meta[property="og:site_name"]', 'meta[name="application-name"]', 'meta[name="twitter:site"]') || window.location.hostname,
             };
           },
         },
@@ -158,8 +246,8 @@ function App() {
                   type: 'sidepanel-selection-context',
                   text: '',
                   metadata: meta,
-                  title: meta.title || tab.title,
-                  url: meta.canonicalUrl || tab.url,
+                  title: (meta as { title?: string }).title || tab.title,
+                  url: (meta as { canonicalUrl?: string }).canonicalUrl || tab.url,
                 },
           );
         },
@@ -224,12 +312,21 @@ function App() {
       if (message.action === 'extract-citation') {
         if (message.note) {
           const savedNote = message.note;
+          const targetFolderId = selectedFolderIdRef.current || DEFAULT_FOLDER_ID;
+          const noteWithFolder = { ...savedNote, folderId: targetFolderId };
+
           setNotes((current) => {
             if (current.some((n) => n.id === savedNote.id)) return current;
-            return [savedNote, ...current];
+            return [noteWithFolder, ...current];
           });
+
+          if (targetFolderId !== DEFAULT_FOLDER_ID) {
+            moveQuickNote(savedNote.id, targetFolderId).catch(() => {});
+          }
+
+          setSelectedFolderId(targetFolderId);
         }
-        setActiveTab('citations');
+        setActiveTab('notes');
         showToast('Citation saved to notes.');
         return;
       }
@@ -398,7 +495,7 @@ function App() {
   };
 
   const toggleNoteCollapsed = (noteId: string) => {
-    setCollapsedNotes((current) => {
+    setExpandedNotes((current) => {
       const next = new Set(current);
       if (next.has(noteId)) {
         next.delete(noteId);
@@ -664,13 +761,13 @@ function App() {
             <p className="empty-state">Take notes from the current page or save a highlighted passage.</p>
           ) : (
             visibleNotes.map((note) => {
-              const isCollapsed = collapsedNotes.has(note.id);
+              const isCollapsed = !expandedNotes.has(note.id);
 
               return (
-                <article className={`note-item ${isCollapsed ? 'collapsed' : ''}`} key={note.id}>
+                <article className={`note-item ${isCollapsed ? 'collapsed' : ''} ${note.kind === 'citation' ? 'note-item--citation' : ''}`} key={note.id}>
                   <header>
                     <strong>{note.metadata?.title || note.title || 'Untitled page'}</strong>
-                    <span>{note.kind === 'page' ? 'Page notes' : 'Selection note'}</span>
+                    <span>{note.kind === 'page' ? 'Page notes' : note.kind === 'citation' ? 'Citation' : 'Selection note'}</span>
                     <time dateTime={note.createdAt}>
                       {new Intl.DateTimeFormat('en-US', {
                         month: 'short',

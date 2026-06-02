@@ -42,7 +42,16 @@ function requestPageText(tabId: number): Promise<ExtractedPage> {
 
         const metadata = {
           title: getMeta('og:title') || document.title || '',
-          author: getMeta('author') || getMeta('article:author') || getMeta('og:author') || '',
+          author:
+            getMeta('author') ||
+            getMeta('article:author') ||
+            getMeta('dc.creator') ||
+            getMeta('DC.creator') ||
+            getMeta('parsely-author') ||
+            getMeta('sailthru.author') ||
+            getMeta('byl') ||
+            getMeta('twitter:creator') ||
+            '',
           canonicalUrl:
             (document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null)?.href ||
             window.location.href,
@@ -165,6 +174,7 @@ export default defineBackground(() => {
           .then(() =>
             saveQuickNote({
               text: noteText,
+              kind: 'citation',
               metadata: message.metadata,
               url: sender.tab?.url,
               title: sender.tab?.title,

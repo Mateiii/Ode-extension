@@ -5,7 +5,7 @@ export type QuickNote = {
   text: string;
   createdAt: string;
   folderId?: string;
-  kind?: 'selection' | 'page' | 'manual';
+  kind?: 'selection' | 'page' | 'manual' | 'citation';
   metadata?: PageMetadata;
   title?: string;
   url?: string;
