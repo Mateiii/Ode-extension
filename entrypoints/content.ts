@@ -46,6 +46,7 @@ export default defineContentScript({
         <button data-action="ask-ai" type="button">Ask AI</button>
         <button data-action="fact-check" type="button">Fact Check</button>
         <button data-action="save-note" type="button">Save to Notes</button>
+        <button data-action="extract-citation" type="button">Cite</button>
       </div>
     `;
 

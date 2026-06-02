@@ -1,7 +1,7 @@
 import { factCheckClaim } from '@/lib/factCheck';
 import type { PageMetadata } from '@/lib/pageMetadata';
 import { summarizePageNotes } from '@/lib/pageNotes';
-import { savePageNote, saveQuickNote } from '@/lib/researchStorage';
+import { formatCitation, savePageNote, saveQuickNote } from '@/lib/researchStorage';
 import { setPendingSidepanelAction } from '@/lib/sidepanelQueue';
 
 type ExtractedPage = {
@@ -42,7 +42,16 @@ function requestPageText(tabId: number): Promise<ExtractedPage> {
 
         const metadata = {
           title: getMeta('og:title') || document.title || '',
-          author: getMeta('author') || getMeta('article:author') || getMeta('og:author') || '',
+          author:
+            getMeta('author') ||
+            getMeta('article:author') ||
+            getMeta('dc.creator') ||
+            getMeta('DC.creator') ||
+            getMeta('parsely-author') ||
+            getMeta('sailthru.author') ||
+            getMeta('byl') ||
+            getMeta('twitter:creator') ||
+            '',
           canonicalUrl:
             (document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null)?.href ||
             window.location.href,
@@ -148,6 +157,38 @@ export default defineBackground(() => {
               ...sidepanelMessage,
               type: 'sidepanel-fact-check-result',
               error: error instanceof Error ? error.message : 'Fact check failed.',
+            });
+          });
+
+        return true;
+      }
+
+      if (message.action === 'extract-citation') {
+        const openingSidePanel = openSidePanel(tabId);
+        const fallback = { title: sender.tab?.title, url: sender.tab?.url };
+        const apa = formatCitation('apa', message.metadata as PageMetadata | undefined, fallback);
+        const mla = formatCitation('mla', message.metadata as PageMetadata | undefined, fallback);
+        const noteText = `> "${message.text}"\n\nAPA: ${apa}\n\nMLA: ${mla}`;
+
+        openingSidePanel
+          .then(() =>
+            saveQuickNote({
+              text: noteText,
+              kind: 'citation',
+              metadata: message.metadata,
+              url: sender.tab?.url,
+              title: sender.tab?.title,
+            }),
+          )
+          .then((note) => {
+            const citationMessage = { ...sidepanelMessage, note };
+            setPendingSidepanelAction(citationMessage);
+            chrome.runtime.sendMessage(citationMessage);
+          })
+          .catch((error: unknown) => {
+            chrome.runtime.sendMessage({
+              ...sidepanelMessage,
+              error: error instanceof Error ? error.message : 'Could not save citation.',
             });
           });
 
