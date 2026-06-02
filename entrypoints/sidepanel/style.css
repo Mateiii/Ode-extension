@@ -275,7 +275,7 @@ h2 {
   align-items: center;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .notes-toolbar > button {
@@ -589,6 +589,58 @@ h2 {
   border-color: #fca5a5;
 }
 
+.note-type-label {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.note-edited-icon {
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.note-edit-area {
+  display: grid;
+  gap: 8px;
+}
+
+.note-title-input {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 34px;
+  outline: none;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.note-title-input:focus {
+  border-color: #334155;
+  box-shadow: 0 0 0 3px rgba(51, 65, 85, 0.12);
+}
+
+.note-edit-area textarea {
+  font-size: 13px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.note-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.note-edit-actions button {
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 32px;
+  padding: 0 12px;
+}
+
 .sr-only {
   border: 0;
   clip: rect(0 0 0 0);
@@ -613,6 +665,33 @@ h2 {
   position: fixed;
   transform: translateX(-50%);
   z-index: 50;
+}
+
+.note-create-form {
+  border-color: #7dd3fc;
+  display: grid;
+  gap: 10px;
+}
+
+.note-link {
+  background: #eff6ff;
+  border-radius: 3px;
+  color: #2563eb;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0 3px;
+}
+
+.note-link:hover {
+  background: #dbeafe;
+  text-decoration: underline;
+}
+
+.note-link--missing {
+  background: #f8fafc;
+  color: #94a3b8;
+  cursor: default;
+  text-decoration: line-through;
 }
 
 .note-item p,
@@ -665,7 +744,6 @@ h2 {
   border-radius: 8px;
   max-width: 92%;
   min-width: 0;
-  overflow: hidden;
   padding: 10px 12px;
   word-break: break-word;
 }
@@ -684,6 +762,10 @@ h2 {
   line-height: 1.45;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.message p + p {
+  margin-top: 6px;
 }
 
 .message.assistant {

@@ -41,6 +41,15 @@ export default defineContentScript({
         button:hover {
           background: rgba(248, 250, 252, 0.12);
         }
+
+        button:disabled {
+          cursor: not-allowed;
+          opacity: 0.38;
+        }
+
+        button:disabled:hover {
+          background: transparent;
+        }
       </style>
       <div class="bar" part="bar">
         <button data-action="ask-ai" type="button">Ask AI</button>
@@ -52,7 +61,10 @@ export default defineContentScript({
 
     document.documentElement.append(bar);
 
+    const FACT_CHECK_MAX_LENGTH = 400;
+
     const actionBar = shadow.querySelector<HTMLElement>('.bar')!;
+    const factCheckBtn = shadow.querySelector<HTMLButtonElement>('[data-action="fact-check"]')!;
 
     const hideBar = () => {
       actionBar.style.display = 'none';
@@ -118,6 +130,10 @@ export default defineContentScript({
         return;
       }
 
+      const tooLong = selectedText.length > FACT_CHECK_MAX_LENGTH;
+      factCheckBtn.disabled = tooLong;
+      factCheckBtn.textContent = tooLong ? 'Text too long' : 'Fact Check';
+
       showBar(selection);
     };
 
@@ -139,6 +155,7 @@ export default defineContentScript({
       const action = target.dataset.action;
 
       if (!action || selectedText.length === 0) return;
+      if ((target as HTMLButtonElement).disabled) return;
 
       chrome.runtime.sendMessage({
         type: 'selection-action',

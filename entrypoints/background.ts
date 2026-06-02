@@ -1,7 +1,7 @@
 import { factCheckClaim } from '@/lib/factCheck';
 import type { PageMetadata } from '@/lib/pageMetadata';
 import { summarizePageNotes } from '@/lib/pageNotes';
-import { formatCitation, savePageNote, saveQuickNote } from '@/lib/researchStorage';
+import { formatCitation, savePageNote } from '@/lib/researchStorage';
 import { setPendingSidepanelAction } from '@/lib/sidepanelQueue';
 
 type ExtractedPage = {
@@ -113,32 +113,7 @@ export default defineBackground(() => {
       };
 
       if (message.action === 'save-note') {
-        const openingSidePanel = openSidePanel(tabId);
-
-        openingSidePanel
-          .then(() =>
-            saveQuickNote({
-              text: message.text,
-              metadata: message.metadata,
-              url: sender.tab?.url,
-              title: sender.tab?.title,
-            }),
-          )
-          .then((note) => {
-            const savedMessage = {
-              ...sidepanelMessage,
-              note,
-            };
-            setPendingSidepanelAction(savedMessage);
-            chrome.runtime.sendMessage(savedMessage);
-          })
-          .catch((error: unknown) => {
-            chrome.runtime.sendMessage({
-              ...sidepanelMessage,
-              error: error instanceof Error ? error.message : 'Could not save note.',
-            });
-          });
-
+        openAndAnnounce();
         return true;
       }
 
@@ -164,34 +139,15 @@ export default defineBackground(() => {
       }
 
       if (message.action === 'extract-citation') {
-        const openingSidePanel = openSidePanel(tabId);
         const fallback = { title: sender.tab?.title, url: sender.tab?.url };
         const apa = formatCitation('apa', message.metadata as PageMetadata | undefined, fallback);
         const mla = formatCitation('mla', message.metadata as PageMetadata | undefined, fallback);
-        const noteText = `> "${message.text}"\n\nAPA: ${apa}\n\nMLA: ${mla}`;
-
-        openingSidePanel
-          .then(() =>
-            saveQuickNote({
-              text: noteText,
-              kind: 'citation',
-              metadata: message.metadata,
-              url: sender.tab?.url,
-              title: sender.tab?.title,
-            }),
-          )
-          .then((note) => {
-            const citationMessage = { ...sidepanelMessage, note };
-            setPendingSidepanelAction(citationMessage);
-            chrome.runtime.sendMessage(citationMessage);
-          })
-          .catch((error: unknown) => {
-            chrome.runtime.sendMessage({
-              ...sidepanelMessage,
-              error: error instanceof Error ? error.message : 'Could not save citation.',
-            });
-          });
-
+        const citationText = `> "${message.text}"\n\nAPA: ${apa}\n\nMLA: ${mla}`;
+        const citationMessage = { ...sidepanelMessage, citationText };
+        openSidePanel(tabId).then(async () => {
+          await setPendingSidepanelAction(citationMessage);
+          chrome.runtime.sendMessage(citationMessage);
+        });
         return true;
       }
 

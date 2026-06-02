@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
+  Check,
   ChevronDown,
   Clipboard,
   Download,
@@ -8,6 +9,8 @@ import {
   FilePlus,
   FileText,
   FolderPlus,
+  Pencil,
+  Plus,
   Send,
   Settings,
   Trash2,
@@ -22,7 +25,11 @@ import {
   createNoteFolder,
   deleteNoteFolder,
   deleteQuickNote,
+  getNoteTitle,
   moveQuickNote,
+  resolveNoteTitle,
+  saveQuickNote,
+  updateQuickNote,
   DEFAULT_FOLDER_ID,
   getNoteFolders,
   getQuickNotes,
@@ -47,6 +54,7 @@ type SelectionMessage = {
   type: 'sidepanel-selection-action';
   action: 'ask-ai' | 'fact-check' | 'save-note' | 'extract-citation';
   text: string;
+  citationText?: string;
   metadata?: PageMetadata;
   note?: QuickNote;
   title?: string;
@@ -110,6 +118,13 @@ function App() {
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const [folderPendingDelete, setFolderPendingDelete] = useState<NoteFolder | null>(null);
   const [toast, setToast] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
+  const [editingTitleText, setEditingTitleText] = useState('');
+  const [isCreatingNote, setIsCreatingNote] = useState(false);
+  const [newNoteTitle, setNewNoteTitle] = useState('');
+  const [newNoteText, setNewNoteText] = useState('');
+  const [scrollToNoteId, setScrollToNoteId] = useState<string | null>(null);
   const handledActionKeysRef = useRef<Set<string>>(new Set());
   const toastTimerRef = useRef<number | undefined>(undefined);
   const selectedFolderIdRef = useRef(selectedFolderId);
@@ -295,39 +310,67 @@ function App() {
       });
 
       if (message.action === 'save-note') {
-        if (message.note) {
-          const savedNote = message.note;
-          setNotes((current) => {
-            if (current.some((note) => note.id === savedNote.id)) return current;
-            return [savedNote, ...current];
-          });
-        } else {
-          getQuickNotes().then(setNotes);
-        }
-
+        const targetFolderId = selectedFolderIdRef.current || DEFAULT_FOLDER_ID;
+        setSelectedFolderId(targetFolderId);
         setActiveTab('notes');
-        showToast('Saved to notes.');
+
+        const _now = new Date();
+        const _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const _ts = `${_MONTHS[_now.getMonth()]} ${_now.getDate()}, ${String(_now.getHours()).padStart(2,'0')}:${String(_now.getMinutes()).padStart(2,'0')}`;
+        const _raw = message.text.replace(/\s+/g, ' ').trim();
+        const _short = _raw.length > 35 ? _raw.slice(0, 34).trimEnd() + '…' : _raw;
+        const selectionCustomTitle = `[${_ts}] ${_short}`;
+
+        resolveNoteTitle(selectionCustomTitle, targetFolderId)
+          .then((customTitle) => saveQuickNote({
+            text: message.text,
+            metadata: message.metadata,
+            url: message.url,
+            title: message.title,
+            folderId: targetFolderId,
+            customTitle,
+          }))
+          .then((note) => {
+            setExpandedNotes((current) => {
+              const next = new Set(current);
+              next.add(note.id);
+              return next;
+            });
+            showToast('Saved to notes.');
+          })
+          .catch(() => {
+            showToast('Could not save note.');
+          });
       }
 
       if (message.action === 'extract-citation') {
-        if (message.note) {
-          const savedNote = message.note;
-          const targetFolderId = selectedFolderIdRef.current || DEFAULT_FOLDER_ID;
-          const noteWithFolder = { ...savedNote, folderId: targetFolderId };
-
-          setNotes((current) => {
-            if (current.some((n) => n.id === savedNote.id)) return current;
-            return [noteWithFolder, ...current];
-          });
-
-          if (targetFolderId !== DEFAULT_FOLDER_ID) {
-            moveQuickNote(savedNote.id, targetFolderId).catch(() => {});
-          }
-
-          setSelectedFolderId(targetFolderId);
-        }
+        const targetFolderId = selectedFolderIdRef.current || DEFAULT_FOLDER_ID;
+        setSelectedFolderId(targetFolderId);
         setActiveTab('notes');
-        showToast('Citation saved to notes.');
+
+        const citationRawTitle = message.metadata?.title || message.title || 'Citation';
+        resolveNoteTitle(citationRawTitle, targetFolderId)
+          .then((customTitle) => saveQuickNote({
+            text: message.citationText || '',
+            folderId: targetFolderId,
+            kind: 'citation',
+            metadata: message.metadata,
+            url: message.url,
+            title: message.title,
+            customTitle,
+          }))
+          .then((note) => {
+            setExpandedNotes((current) => {
+              const next = new Set(current);
+              next.add(note.id);
+              return next;
+            });
+            showToast('Citation saved to notes.');
+          })
+          .catch(() => {
+            showToast('Could not save citation.');
+        });
+
         return;
       }
 
@@ -411,6 +454,7 @@ function App() {
       if (message.type !== 'sidepanel-selection-action') return;
 
       handleSelectionAction(message);
+      clearPendingSidepanelAction();
     };
 
     chrome.runtime.onMessage.addListener(listener);
@@ -423,6 +467,15 @@ function App() {
       behavior: 'smooth',
     });
   }, [messages]);
+
+  useEffect(() => {
+    if (!scrollToNoteId) return;
+    const timer = window.setTimeout(() => {
+      document.getElementById(`note-${scrollToNoteId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      setScrollToNoteId(null);
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [scrollToNoteId]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -540,15 +593,9 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  const exportNote = (note: QuickNote, format: 'markdown' | 'json') => {
-    const title = note.metadata?.title || note.title || 'Untitled note';
+  const exportNote = (note: QuickNote) => {
+    const title = getNoteTitle(note);
     const slug = title.replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '') || 'note';
-
-    if (format === 'json') {
-      downloadBlob(JSON.stringify(note, null, 2), `${slug}.json`, 'application/json');
-      return;
-    }
-
     const source = note.metadata?.canonicalUrl || note.url || '';
     const md = `# ${title}\n\n${note.text}\n\n${source ? `Source: ${source}\n\n` : ''}Created: ${note.createdAt}`;
     downloadBlob(md, `${slug}.md`, 'text/markdown');
@@ -568,6 +615,79 @@ function App() {
     await moveQuickNote(note.id, folderId);
     const target = folders.find((folder) => folder.id === folderId);
     showToast(`Moved to ${target?.name || 'folder'}.`);
+  };
+
+  const startEditNote = (note: QuickNote) => {
+    if (!expandedNotes.has(note.id)) toggleNoteCollapsed(note.id);
+    setEditingNoteId(note.id);
+    setEditingText(note.text);
+    setEditingTitleText(getNoteTitle(note));
+  };
+
+  const saveEditNote = async (note: QuickNote) => {
+    const trimmedText = editingText.trim();
+    let trimmedTitle = editingTitleText.trim();
+    setEditingNoteId(null);
+    const textChanged = trimmedText && trimmedText !== note.text;
+    const titleChanged = trimmedTitle && trimmedTitle !== getNoteTitle(note);
+    if (!textChanged && !titleChanged) return;
+    if (titleChanged) {
+      trimmedTitle = await resolveNoteTitle(
+        trimmedTitle,
+        note.folderId || DEFAULT_FOLDER_ID,
+        note.id,
+      );
+    }
+    const updates = {
+      text: trimmedText || note.text,
+      customTitle: trimmedTitle || undefined,
+    };
+    setNotes((current) =>
+      current.map((n) => n.id === note.id ? { ...n, ...updates, edited: true } : n),
+    );
+    await updateQuickNote(note.id, updates);
+    showToast(titleChanged && trimmedTitle !== editingTitleText.trim() ? `Renamed to "${trimmedTitle}".` : 'Note updated.');
+  };
+
+  const cancelEditNote = () => setEditingNoteId(null);
+
+  const buildDefaultNoteTitle = () => {
+    const now = new Date();
+    const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const ts = `${MONTHS[now.getMonth()]} ${now.getDate()}, ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const pageTitle = context?.metadata?.title || context?.title || '';
+    const shortened = pageTitle.length > 35 ? pageTitle.slice(0, 34).trimEnd() + '…' : pageTitle;
+    return pageTitle ? `[${ts}] ${shortened}` : `[${ts}]`;
+  };
+
+  const startCreateNote = () => {
+    setIsCreatingNote(true);
+    setNewNoteTitle(buildDefaultNoteTitle());
+    setNewNoteText('');
+  };
+
+  const saveNewNote = async () => {
+    const text = newNoteText.trim();
+    if (!text) { setIsCreatingNote(false); return; }
+    setIsCreatingNote(false);
+    const targetFolderId = selectedFolderIdRef.current || DEFAULT_FOLDER_ID;
+    const rawTitle = newNoteTitle.trim() || buildDefaultNoteTitle();
+    const customTitle = await resolveNoteTitle(rawTitle, targetFolderId);
+    const note = await saveQuickNote({ text, kind: 'manual', folderId: targetFolderId, customTitle });
+    setExpandedNotes((current) => { const next = new Set(current); next.add(note.id); return next; });
+    setScrollToNoteId(note.id);
+    showToast(customTitle !== rawTitle ? `Note created as "${customTitle}".` : 'Note created.');
+  };
+
+  const cancelCreateNote = () => setIsCreatingNote(false);
+
+  const navigateToNote = (noteId: string) => {
+    const target = notes.find((n) => n.id === noteId);
+    if (!target) return;
+    setSelectedFolderId(target.folderId || DEFAULT_FOLDER_ID);
+    setActiveTab('notes');
+    setExpandedNotes((current) => { const next = new Set(current); next.add(noteId); return next; });
+    setScrollToNoteId(noteId);
   };
 
   return (
@@ -654,7 +774,13 @@ function App() {
           {messages.map((message) => (
             <article className={`message ${message.role}`} key={message.id}>
               <span>{message.role === 'assistant' ? 'Øde' : 'You'}</span>
-              {message.factCheck ? null : <p>{message.content}</p>}
+              {message.factCheck ? null : message.content.split('\n\n').map((para, i) => (
+                <p key={i}>
+                  {para.split('\n').flatMap((line, j) =>
+                    j === 0 ? [line] : [<br key={j} />, line]
+                  )}
+                </p>
+              ))}
               {message.loading ? (
                 <div className="loading-dots" aria-label="Waiting for fact-check result">
                   <i />
@@ -695,6 +821,10 @@ function App() {
         <section className="notes-area" aria-label="Research notes">
           <div className="notes-header">
           <div className="notes-toolbar">
+            <Button onClick={startCreateNote} type="button" disabled={isCreatingNote}>
+              <Plus aria-hidden="true" size={15} />
+              New note
+            </Button>
             <Button onClick={takePageNotes} type="button" disabled={isTakingPageNotes}>
               <FilePlus aria-hidden="true" size={15} />
               {isTakingPageNotes ? 'Taking notes...' : 'Take page notes'}
@@ -757,17 +887,54 @@ function App() {
           </div>
 
           <div className="notes-list">
-          {visibleNotes.length === 0 ? (
+          {isCreatingNote ? (
+            <div className="note-item note-create-form">
+              <input
+                autoFocus
+                className="note-title-input"
+                onChange={(e) => setNewNoteTitle(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') cancelCreateNote(); }}
+                placeholder="Title (optional)"
+                type="text"
+                value={newNoteTitle}
+              />
+              <Textarea
+                onChange={(e) => setNewNoteText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') cancelCreateNote();
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveNewNote();
+                }}
+                placeholder="Write your note…"
+                rows={5}
+                value={newNoteText}
+              />
+              <div className="note-edit-actions">
+                <Button onClick={saveNewNote} type="button">
+                  <Check aria-hidden="true" size={13} />
+                  Save
+                </Button>
+                <Button onClick={cancelCreateNote} type="button" variant="outline">
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          {visibleNotes.length === 0 && !isCreatingNote ? (
             <p className="empty-state">Take notes from the current page or save a highlighted passage.</p>
           ) : (
             visibleNotes.map((note) => {
               const isCollapsed = !expandedNotes.has(note.id);
 
+              const isEditing = editingNoteId === note.id;
+
               return (
-                <article className={`note-item ${isCollapsed ? 'collapsed' : ''} ${note.kind === 'citation' ? 'note-item--citation' : ''}`} key={note.id}>
+                <article className={`note-item ${isCollapsed ? 'collapsed' : ''} ${note.kind === 'citation' ? 'note-item--citation' : ''}`} id={`note-${note.id}`} key={note.id}>
                   <header>
-                    <strong>{note.metadata?.title || note.title || 'Untitled page'}</strong>
-                    <span>{note.kind === 'page' ? 'Page notes' : note.kind === 'citation' ? 'Citation' : 'Selection note'}</span>
+                    <strong>{getNoteTitle(note)}</strong>
+                    <span className="note-type-label">
+                      {note.kind === 'page' ? 'Page notes' : note.kind === 'citation' ? 'Citation' : note.kind === 'manual' ? 'Note' : 'Selection note'}
+                      {note.edited ? <Pencil aria-label="Edited" className="note-edited-icon" size={10} /> : null}
+                    </span>
                     <time dateTime={note.createdAt}>
                       {new Intl.DateTimeFormat('en-US', {
                         month: 'short',
@@ -780,7 +947,8 @@ function App() {
                       <Button
                         aria-label="Export note as Markdown"
                         className="note-icon-btn"
-                        onClick={() => exportNote(note, 'markdown')}
+                        disabled={isEditing}
+                        onClick={() => exportNote(note)}
                         size="icon"
                         type="button"
                         variant="outline"
@@ -788,18 +956,33 @@ function App() {
                         <Download aria-hidden="true" size={14} />
                       </Button>
                       <Button
-                        aria-label="Export note as JSON"
+                        aria-label="Copy note to clipboard"
                         className="note-icon-btn"
-                        onClick={() => exportNote(note, 'json')}
+                        disabled={isEditing}
+                        onClick={() => { copyText(note.text); showToast('Copied to clipboard.'); }}
                         size="icon"
                         type="button"
                         variant="outline"
                       >
-                        <FileText aria-hidden="true" size={14} />
+                        <Clipboard aria-hidden="true" size={14} />
                       </Button>
+                      {note.kind !== 'citation' ? (
+                        <Button
+                          aria-label="Edit note"
+                          className="note-icon-btn"
+                          disabled={isEditing}
+                          onClick={() => startEditNote(note)}
+                          size="icon"
+                          type="button"
+                          variant="outline"
+                        >
+                          <Pencil aria-hidden="true" size={14} />
+                        </Button>
+                      ) : null}
                       <Button
                         aria-label="Delete note"
                         className="note-icon-btn note-delete"
+                        disabled={isEditing}
                         onClick={() => handleDeleteNote(note)}
                         size="icon"
                         type="button"
@@ -811,6 +994,7 @@ function App() {
                         aria-expanded={!isCollapsed}
                         aria-label={isCollapsed ? 'Expand note' : 'Collapse note'}
                         className="note-icon-btn note-collapse-toggle"
+                        disabled={isEditing}
                         onClick={() => toggleNoteCollapsed(note.id)}
                         size="icon"
                         type="button"
@@ -820,9 +1004,59 @@ function App() {
                       </Button>
                     </div>
                   </header>
-                  {isCollapsed ? null : (
+                  {isCollapsed ? null : isEditing ? (
+                    <div className="note-edit-area">
+                      <input
+                        className="note-title-input"
+                        value={editingTitleText}
+                        onChange={(e) => setEditingTitleText(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Escape') cancelEditNote(); }}
+                        placeholder="Note title"
+                        type="text"
+                      />
+                      <Textarea
+                        autoFocus
+                        value={editingText}
+                        onChange={(e) => setEditingText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') cancelEditNote();
+                          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveEditNote(note);
+                        }}
+                        rows={Math.max(3, editingText.split('\n').length + 1)}
+                      />
+                      <div className="note-edit-actions">
+                        <Button onClick={() => saveEditNote(note)} type="button">
+                          <Check aria-hidden="true" size={13} />
+                          Save
+                        </Button>
+                        <Button onClick={cancelEditNote} type="button" variant="outline">
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
                     <>
-                      <p>{note.text}</p>
+                      <p>
+                        {note.text.split(/(\[\[[^\]\n]+\]\])/).map((part, i) => {
+                          const match = part.match(/^\[\[([^\]\n]+)\]\]$/);
+                          if (match) {
+                            const name = match[1];
+                            const target = notes.find((n) => getNoteTitle(n).toLowerCase() === name.toLowerCase());
+                            return target ? (
+                              <span
+                                className="note-link"
+                                key={i}
+                                onClick={() => navigateToNote(target.id)}
+                                role="button"
+                                tabIndex={0}
+                              >{name}</span>
+                            ) : (
+                              <span className="note-link note-link--missing" key={i}>{part}</span>
+                            );
+                          }
+                          return <span key={i}>{part}</span>;
+                        })}
+                      </p>
                       {note.metadata?.canonicalUrl || note.url ? (
                         <a href={note.metadata?.canonicalUrl || note.url} rel="noreferrer" target="_blank">
                           {note.metadata?.canonicalUrl || note.url}
@@ -847,6 +1081,7 @@ function App() {
                     </>
                   )}
                 </article>
+
               );
             })
           )}

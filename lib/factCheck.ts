@@ -32,6 +32,7 @@ export type FactCheckDependencies = {
 };
 
 const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
+const MAX_TAVILY_QUERY_LENGTH = 400;
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 
 const DISPUTE_TERMS = [
@@ -347,7 +348,11 @@ export async function factCheckClaim(claim: string, dependencies: FactCheckDepen
     openAiModel: dependencies.openAiModel ?? getEnvValue('WXT_OPENAI_MODEL'),
   };
 
-  const sources = await searchTavily(trimmedClaim, resolvedDependencies);
+  const searchQuery = trimmedClaim.length > MAX_TAVILY_QUERY_LENGTH
+    ? trimmedClaim.slice(0, MAX_TAVILY_QUERY_LENGTH).trimEnd() + '…'
+    : trimmedClaim;
+
+  const sources = await searchTavily(searchQuery, resolvedDependencies);
   if (sources.length === 0) {
     return {
       status: 'Disputed',
