@@ -91,6 +91,23 @@ export default defineContentScript({
       });
     };
 
+    const extractPageText = () => {
+      const metadata = scrapePageMetadata();
+      const main =
+        document.querySelector<HTMLElement>('main, article, [role="main"]') ?? document.body;
+      const text = (main?.innerText || document.body.innerText || '')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim();
+
+      return {
+        metadata,
+        title: metadata.title || document.title || 'Untitled page',
+        url: metadata.canonicalUrl || window.location.href,
+        text,
+      };
+    };
+
     const updateSelection = () => {
       const selection = window.getSelection();
       selectedText = getSelectedText();
@@ -128,6 +145,12 @@ export default defineContentScript({
         text: selectedText,
         metadata: scrapePageMetadata(),
       });
+    });
+
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (!message || typeof message !== 'object' || message.type !== 'extract-page-notes') return;
+
+      sendResponse(extractPageText());
     });
   },
 });
