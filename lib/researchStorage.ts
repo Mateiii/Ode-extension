@@ -5,7 +5,9 @@ export type QuickNote = {
   text: string;
   createdAt: string;
   folderId?: string;
-  kind?: 'selection' | 'page' | 'manual';
+  kind?: 'selection' | 'page' | 'manual' | 'citation';
+  edited?: boolean;
+  customTitle?: string;
   metadata?: PageMetadata;
   title?: string;
   url?: string;
@@ -106,6 +108,15 @@ export async function moveQuickNote(id: string, folderId: string) {
   });
 }
 
+export async function updateQuickNote(id: string, updates: { text: string; customTitle?: string }) {
+  const notes = await getQuickNotes();
+  await storageSet({
+    [QUICK_NOTES_STORAGE_KEY]: notes.map((note) =>
+      note.id === id ? { ...note, ...updates, edited: true } : note,
+    ),
+  });
+}
+
 // Deletes a folder and reassigns its notes to the default folder so notes are
 // never lost. The default folder itself cannot be deleted.
 export async function deleteNoteFolder(id: string) {
@@ -126,6 +137,46 @@ export async function savePageNote(input: Omit<QuickNote, 'id' | 'createdAt' | '
     ...input,
     kind: 'page',
   });
+}
+
+export const getNoteTitle = (note: QuickNote): string =>
+  note.customTitle || note.metadata?.title || note.title || 'Untitled page';
+
+export async function resolveNoteTitle(
+  desired: string,
+  targetFolderId: string,
+  excludeNoteId?: string,
+): Promise<string> {
+  const [allNotes, folders] = await Promise.all([getQuickNotes(), getNoteFolders()]);
+
+  const taken = (t: string) =>
+    allNotes.some(
+      (n) => n.id !== excludeNoteId && getNoteTitle(n).toLowerCase() === t.toLowerCase(),
+    );
+
+  if (!taken(desired)) return desired;
+
+  const conflictInSameFolder = allNotes.some(
+    (n) =>
+      n.id !== excludeNoteId &&
+      getNoteTitle(n).toLowerCase() === desired.toLowerCase() &&
+      (n.folderId || DEFAULT_FOLDER_ID) === targetFolderId,
+  );
+
+  if (conflictInSameFolder) {
+    for (let i = 2; ; i++) {
+      const candidate = `${desired} (${i})`;
+      if (!taken(candidate)) return candidate;
+    }
+  }
+
+  const folderName = folders.find((f) => f.id === targetFolderId)?.name ?? 'General';
+  const withFolder = `${desired} (${folderName})`;
+  if (!taken(withFolder)) return withFolder;
+  for (let i = 2; ; i++) {
+    const candidate = `${withFolder} (${i})`;
+    if (!taken(candidate)) return candidate;
+  }
 }
 
 const clean = (value?: string) => value?.trim() || '';
