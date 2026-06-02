@@ -111,17 +111,20 @@ h2 {
 }
 
 .context-header > div {
+  flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .context-preview {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: #64748b;
+  display: -webkit-box;
   font-size: 12px;
   line-height: 1.35;
   margin: 3px 0 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .context-toggle {

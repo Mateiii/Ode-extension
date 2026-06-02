@@ -45,7 +45,7 @@ type ChatMessage = {
 
 type SelectionMessage = {
   type: 'sidepanel-selection-action';
-  action: 'ask-ai' | 'fact-check' | 'save-note';
+  action: 'ask-ai' | 'fact-check' | 'save-note' | 'extract-citation';
   text: string;
   metadata?: PageMetadata;
   note?: QuickNote;
@@ -80,6 +80,7 @@ const actionLabels: Record<SelectionMessage['action'], string> = {
   'ask-ai': 'Ask AI',
   'fact-check': 'Fact Check',
   'save-note': 'Save to Notes',
+  'extract-citation': 'Cite',
 };
 
 const initialMessages: ChatMessage[] = [
@@ -218,6 +219,19 @@ function App() {
 
         setActiveTab('notes');
         showToast('Saved to notes.');
+      }
+
+      if (message.action === 'extract-citation') {
+        if (message.note) {
+          const savedNote = message.note;
+          setNotes((current) => {
+            if (current.some((n) => n.id === savedNote.id)) return current;
+            return [savedNote, ...current];
+          });
+        }
+        setActiveTab('citations');
+        showToast('Citation saved to notes.');
+        return;
       }
 
       setMessages((current) => [
