@@ -133,68 +133,68 @@ Navigation uses `scrollToNoteId` state + a `useEffect` with a 50ms timeout to le
 
 `clearPendingSidepanelAction()` is called (no ID, clears whatever is pending) after `handleSelectionAction(message)` in the live `onMessage` listener. This prevents the fact-check loading state from getting stuck after a panel refresh.
 
-## Known Broken / Incomplete Features
+## Note Title Naming
 
-### Default Note Title (`buildDefaultNoteTitle`)
+### Selection notes (`kind: 'selection'`)
 
-**Status: not working reliably.**
-
-Located in `App.tsx` just before `startCreateNote`. Intended format: `[Jun 3, 14:23] Article Title…`
+Title is generated at save time in `handleSelectionAction` (App.tsx):
 
 ```ts
-const buildDefaultNoteTitle = () => {
-  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const ts = `${MONTHS[now.getMonth()]} ${now.getDate()}, ${HH}:${MM}`;
-  const pageTitle = context?.metadata?.title || context?.title || '';
-  ...
-  return pageTitle ? `[${ts}] ${shortened}` : `[${ts}]`;
-};
+const _ts = `${MONTHS[month]} ${day}, ${HH}:${MM}`;
+const _raw = message.text.replace(/\s+/g, ' ').trim();
+const _short = _raw.length > 35 ? _raw.slice(0, 34).trimEnd() + '…' : _raw;
+const selectionCustomTitle = `[${_ts}] ${_short}`;
 ```
 
-Called in `startCreateNote` to pre-populate `newNoteTitle`. The issue is likely one or more of:
-1. `context` is null when the form opens (async executeScript on mount hasn't resolved, or the page blocks scripting)
-2. The title IS being set but then overwritten/reset somewhere in state
-3. There may be a React closure/stale-state issue since `buildDefaultNoteTitle` closes over `context` state
+Result example: `[Jun 3, 14:23] The quick brown fox jumps ov…`
 
-**To debug**: `console.log(context)` inside `buildDefaultNoteTitle`, and `console.log(newNoteTitle)` inside `saveNewNote`. Check if context is populated at click time.
+Stored as `customTitle` so it takes priority over the fallback page-title chain.
 
-### Note Naming Conventions (`resolveNoteTitle`)
+### Manual notes (`kind: 'manual'`)
 
-**Status: not working reliably.**
+`buildDefaultNoteTitle()` in App.tsx pre-populates the title input when the "New note" form opens. Format: `[Jun 3, 14:23] Page Title…` (uses `context?.metadata?.title || context?.title`). User can edit before saving.
 
-Located in `lib/researchStorage.ts`. Logic:
-- If desired title is not taken → use as-is
-- If taken in a **different** folder → append ` (FolderName)`
-- If taken in the **same** folder → append ` (2)`, ` (3)`, …
+Known caveat: if `context` is null when the button is clicked (page blocks scripting, or async executeScript hasn't resolved yet), the title falls back to just `[Jun 3, 14:23]`. Not a blocker.
 
-Called from `saveNewNote` and `saveEditNote` in App.tsx, passing the current React `notes` and `folders` state arrays.
+### Citation notes (`kind: 'citation'`)
 
-Likely issues:
-1. `notes` state passed to `resolveNoteTitle` may be stale (React state snapshot from last render, not including a note just saved milliseconds ago via `saveQuickNote`)
-2. `getNoteTitle` compares against all notes including ones with `metadata?.title` from web pages — these can be long strings like "Title | Site Name" that never conflict with user-typed titles, so the deduplication may appear to do nothing for realistic cases
-3. The function was not tested against actual storage state, only React state snapshot
+Raw title derived from `message.metadata?.title || message.title || 'Citation'`, then run through `resolveNoteTitle` and stored as `customTitle`.
 
-**To fix**: Instead of passing `notes` from React state, call `getQuickNotes()` inside `resolveNoteTitle` (make it async) to always work against live storage. This avoids stale-state issues entirely.
+## Note Title Deduplication (`resolveNoteTitle`)
 
-Suggested rewrite in `researchStorage.ts`:
+**Status: working.**
+
+Located in `lib/researchStorage.ts`. Signature:
 
 ```ts
 export async function resolveNoteTitle(
   desired: string,
   targetFolderId: string,
-  folders: NoteFolder[],
   excludeNoteId?: string,
-): Promise<string> {
-  const allNotes = await getQuickNotes(); // always fresh
-  // ... rest of logic unchanged
-}
+): Promise<string>
 ```
 
-Then update call sites in App.tsx to `await resolveNoteTitle(...)`.
+Fetches fresh notes and folders from storage internally — no stale React state. Rules:
+
+| Situation | Result |
+|---|---|
+| No conflict | `desired` unchanged |
+| Conflict in a **different** folder | `desired (FolderName)` |
+| Conflict in the **same** folder | `desired (2)`, `desired (3)`, … |
+
+Called from all four save paths in App.tsx:
+- `handleSelectionAction` save-note — chained before `saveQuickNote`
+- `handleSelectionAction` extract-citation — chained before `saveQuickNote`
+- `saveNewNote` — `await resolveNoteTitle(rawTitle, folderId)`
+- `saveEditNote` — `await resolveNoteTitle(trimmedTitle, folderId, note.id)`
+
+## Known Broken / Incomplete Features
+
+*(none currently — previous issues with note naming and dedup have been resolved)*
 
 ## Current Branch & PR
 
-Branch `feat-citations` is open as PR #3 against `main`.
+PR #3 (`feat-citations`) merged to `main`. PR #4 (`feat-citations`) open — note title naming + dedup.
 
 ## Git/Workspace Notes
 
