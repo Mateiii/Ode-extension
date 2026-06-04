@@ -1,5 +1,13 @@
 import type { PageMetadata } from '@/lib/pageMetadata';
 
+export type Project = {
+  id: string;
+  name: string;
+  createdAt: string;
+  defaultFolderId: string;
+  sourcesFolderId?: string;
+};
+
 export type QuickNote = {
   id: string;
   text: string;
@@ -7,6 +15,7 @@ export type QuickNote = {
   folderId?: string;
   kind?: 'selection' | 'page' | 'manual' | 'citation';
   edited?: boolean;
+  pinned?: boolean;
   customTitle?: string;
   metadata?: PageMetadata;
   title?: string;
@@ -17,13 +26,18 @@ export type NoteFolder = {
   id: string;
   name: string;
   createdAt: string;
+  projectId: string;
 };
 
 export type CitationStyle = 'apa' | 'mla';
 
 export const QUICK_NOTES_STORAGE_KEY = 'quickNotes';
 export const NOTE_FOLDERS_STORAGE_KEY = 'noteFolders';
+export const PROJECTS_STORAGE_KEY = 'projects';
+export const ACTIVE_PROJECT_STORAGE_KEY = 'activeProjectId';
 export const DEFAULT_FOLDER_ID = 'default';
+export const SOURCES_FOLDER_ID = 'sources';
+export const DEFAULT_PROJECT_ID = 'default-project';
 
 const getRandomId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -46,19 +60,113 @@ const storageSet = (items: Record<string, unknown>): Promise<void> =>
   });
 
 export const getQuickNotes = () => storageGet<QuickNote[]>(QUICK_NOTES_STORAGE_KEY, []);
-export const getNoteFolders = async () => {
-  const folders = await storageGet<NoteFolder[]>(NOTE_FOLDERS_STORAGE_KEY, []);
-  if (folders.length > 0) return folders;
 
-  const defaultFolder: NoteFolder = {
-    id: DEFAULT_FOLDER_ID,
-    name: 'General',
+export const getProjects = async (): Promise<Project[]> => {
+  const projects = await storageGet<Project[]>(PROJECTS_STORAGE_KEY, []);
+  if (projects.length > 0) return projects;
+
+  const defaultProject: Project = {
+    id: DEFAULT_PROJECT_ID,
+    name: 'General Research',
     createdAt: new Date().toISOString(),
+    defaultFolderId: DEFAULT_FOLDER_ID,
+    sourcesFolderId: SOURCES_FOLDER_ID,
   };
 
-  await storageSet({ [NOTE_FOLDERS_STORAGE_KEY]: [defaultFolder] });
-  return [defaultFolder];
+  await storageSet({ [PROJECTS_STORAGE_KEY]: [defaultProject] });
+  return [defaultProject];
 };
+
+export const getNoteFolders = async (): Promise<NoteFolder[]> => {
+  const raw = await storageGet<Array<Partial<NoteFolder> & { id: string; name: string; createdAt: string }>>(
+    NOTE_FOLDERS_STORAGE_KEY,
+    [],
+  );
+
+  let needsMigration = false;
+  const folders: NoteFolder[] = raw.map((f) => {
+    if (!f.projectId) {
+      needsMigration = true;
+      return { ...f, projectId: DEFAULT_PROJECT_ID } as NoteFolder;
+    }
+    return f as NoteFolder;
+  });
+
+  if (folders.length === 0) {
+    const defaultFolder: NoteFolder = {
+      id: DEFAULT_FOLDER_ID,
+      name: 'General',
+      createdAt: new Date().toISOString(),
+      projectId: DEFAULT_PROJECT_ID,
+    };
+    const sourcesFolder: NoteFolder = {
+      id: SOURCES_FOLDER_ID,
+      name: 'Sources',
+      createdAt: new Date().toISOString(),
+      projectId: DEFAULT_PROJECT_ID,
+    };
+    await storageSet({ [NOTE_FOLDERS_STORAGE_KEY]: [defaultFolder, sourcesFolder] });
+    return [defaultFolder, sourcesFolder];
+  }
+
+  if (needsMigration) {
+    await storageSet({ [NOTE_FOLDERS_STORAGE_KEY]: folders });
+  }
+
+  return folders;
+};
+
+export async function createProject(name: string): Promise<Project> {
+  const projectId = getRandomId();
+  const defaultFolder: NoteFolder = {
+    id: getRandomId(),
+    name: 'General',
+    createdAt: new Date().toISOString(),
+    projectId,
+  };
+  const sourcesFolder: NoteFolder = {
+    id: getRandomId(),
+    name: 'Sources',
+    createdAt: new Date().toISOString(),
+    projectId,
+  };
+  const project: Project = {
+    id: projectId,
+    name: name.trim() || 'Untitled project',
+    createdAt: new Date().toISOString(),
+    defaultFolderId: defaultFolder.id,
+    sourcesFolderId: sourcesFolder.id,
+  };
+
+  const [projects, folders] = await Promise.all([getProjects(), getNoteFolders()]);
+
+  await storageSet({
+    [PROJECTS_STORAGE_KEY]: [...projects, project],
+    [NOTE_FOLDERS_STORAGE_KEY]: [...folders, defaultFolder, sourcesFolder],
+  });
+
+  return project;
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  if (id === DEFAULT_PROJECT_ID) return;
+
+  const [projects, folders, notes] = await Promise.all([
+    getProjects(),
+    getNoteFolders(),
+    getQuickNotes(),
+  ]);
+
+  const projectFolderIds = new Set(folders.filter((f) => f.projectId === id).map((f) => f.id));
+
+  await storageSet({
+    [PROJECTS_STORAGE_KEY]: projects.filter((p) => p.id !== id),
+    [NOTE_FOLDERS_STORAGE_KEY]: folders.filter((f) => f.projectId !== id),
+    [QUICK_NOTES_STORAGE_KEY]: notes.filter(
+      (n) => !projectFolderIds.has(n.folderId || DEFAULT_FOLDER_ID),
+    ),
+  });
+}
 
 export async function saveQuickNote(input: Omit<QuickNote, 'id' | 'createdAt'>) {
   const note: QuickNote = {
@@ -77,11 +185,12 @@ export async function saveQuickNote(input: Omit<QuickNote, 'id' | 'createdAt'>) 
   return note;
 }
 
-export async function createNoteFolder(name: string) {
+export async function createNoteFolder(name: string, projectId: string = DEFAULT_PROJECT_ID) {
   const folder: NoteFolder = {
     id: getRandomId(),
     name: name.trim() || 'Untitled folder',
     createdAt: new Date().toISOString(),
+    projectId,
   };
   const folders = await getNoteFolders();
 
@@ -117,19 +226,88 @@ export async function updateQuickNote(id: string, updates: { text: string; custo
   });
 }
 
-// Deletes a folder and reassigns its notes to the default folder so notes are
-// never lost. The default folder itself cannot be deleted.
+export async function pinQuickNote(id: string, pinned: boolean) {
+  const notes = await getQuickNotes();
+  await storageSet({
+    [QUICK_NOTES_STORAGE_KEY]: notes.map((note) =>
+      note.id === id ? { ...note, pinned } : note,
+    ),
+  });
+}
+
+export async function swapQuickNotes(idA: string, idB: string) {
+  const notes = await getQuickNotes();
+  const iA = notes.findIndex((n) => n.id === idA);
+  const iB = notes.findIndex((n) => n.id === idB);
+  if (iA === -1 || iB === -1) return;
+  const next = [...notes];
+  [next[iA], next[iB]] = [next[iB], next[iA]];
+  await storageSet({ [QUICK_NOTES_STORAGE_KEY]: next });
+}
+
+// Deletes a folder and reassigns its notes to the project's default folder.
+// A project's default folder cannot be deleted via this path.
 export async function deleteNoteFolder(id: string) {
   if (id === DEFAULT_FOLDER_ID) return;
 
-  const [folders, notes] = await Promise.all([getNoteFolders(), getQuickNotes()]);
+  const [projects, folders, notes] = await Promise.all([
+    getProjects(),
+    getNoteFolders(),
+    getQuickNotes(),
+  ]);
+
+  const folder = folders.find((f) => f.id === id);
+  if (!folder) return;
+
+  const project = projects.find((p) => p.id === folder.projectId);
+  const fallbackFolderId = project?.defaultFolderId ?? DEFAULT_FOLDER_ID;
+
+  if (id === fallbackFolderId) return;
 
   await storageSet({
-    [NOTE_FOLDERS_STORAGE_KEY]: folders.filter((folder) => folder.id !== id),
+    [NOTE_FOLDERS_STORAGE_KEY]: folders.filter((f) => f.id !== id),
     [QUICK_NOTES_STORAGE_KEY]: notes.map((note) =>
-      (note.folderId || DEFAULT_FOLDER_ID) === id ? { ...note, folderId: DEFAULT_FOLDER_ID } : note,
+      (note.folderId || DEFAULT_FOLDER_ID) === id ? { ...note, folderId: fallbackFolderId } : note,
     ),
   });
+}
+
+// Migration: creates a Sources folder for any project that doesn't have one yet.
+// Returns up-to-date projects + folders so callers avoid a second fetch.
+export async function ensureProjectSourcesFolders(): Promise<{ projects: Project[]; folders: NoteFolder[] }> {
+  let [projects, folders] = await Promise.all([getProjects(), getNoteFolders()]);
+
+  let projectsChanged = false;
+  const newFolders: NoteFolder[] = [];
+
+  const updatedProjects = projects.map((project) => {
+    if (project.sourcesFolderId && folders.some((f) => f.id === project.sourcesFolderId)) {
+      return project;
+    }
+    const sourcesId = project.id === DEFAULT_PROJECT_ID ? SOURCES_FOLDER_ID : getRandomId();
+    if (!folders.some((f) => f.id === sourcesId)) {
+      newFolders.push({
+        id: sourcesId,
+        name: 'Sources',
+        createdAt: new Date().toISOString(),
+        projectId: project.id,
+      });
+    }
+    projectsChanged = true;
+    return { ...project, sourcesFolderId: sourcesId };
+  });
+
+  const foldersChanged = newFolders.length > 0;
+  const updatedFolders = foldersChanged ? [...folders, ...newFolders] : folders;
+
+  if (projectsChanged || foldersChanged) {
+    await storageSet({
+      ...(projectsChanged ? { [PROJECTS_STORAGE_KEY]: updatedProjects } : {}),
+      ...(foldersChanged ? { [NOTE_FOLDERS_STORAGE_KEY]: updatedFolders } : {}),
+    });
+  }
+
+  return { projects: updatedProjects, folders: updatedFolders };
 }
 
 export async function savePageNote(input: Omit<QuickNote, 'id' | 'createdAt' | 'kind'>) {
@@ -147,16 +325,27 @@ export async function resolveNoteTitle(
   targetFolderId: string,
   excludeNoteId?: string,
 ): Promise<string> {
-  const [allNotes, folders] = await Promise.all([getQuickNotes(), getNoteFolders()]);
+  const [allNotes, allFolders] = await Promise.all([getQuickNotes(), getNoteFolders()]);
+
+  const targetFolder = allFolders.find((f) => f.id === targetFolderId);
+  const projectId = targetFolder?.projectId ?? DEFAULT_PROJECT_ID;
+
+  const projectFolderIds = new Set(
+    allFolders.filter((f) => f.projectId === projectId).map((f) => f.id),
+  );
+
+  const projectNotes = allNotes.filter((n) =>
+    projectFolderIds.has(n.folderId || DEFAULT_FOLDER_ID),
+  );
 
   const taken = (t: string) =>
-    allNotes.some(
+    projectNotes.some(
       (n) => n.id !== excludeNoteId && getNoteTitle(n).toLowerCase() === t.toLowerCase(),
     );
 
   if (!taken(desired)) return desired;
 
-  const conflictInSameFolder = allNotes.some(
+  const conflictInSameFolder = projectNotes.some(
     (n) =>
       n.id !== excludeNoteId &&
       getNoteTitle(n).toLowerCase() === desired.toLowerCase() &&
@@ -170,7 +359,7 @@ export async function resolveNoteTitle(
     }
   }
 
-  const folderName = folders.find((f) => f.id === targetFolderId)?.name ?? 'General';
+  const folderName = allFolders.find((f) => f.id === targetFolderId)?.name ?? 'General';
   const withFolder = `${desired} (${folderName})`;
   if (!taken(withFolder)) return withFolder;
   for (let i = 2; ; i++) {

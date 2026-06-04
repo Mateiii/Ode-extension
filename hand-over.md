@@ -30,6 +30,43 @@ WXT_OPENAI_MODEL=gpt-4.1-mini
 
 `.env` is gitignored.
 
+## Project Architecture (Phase 3)
+
+Projects are a top-level entity above folders. Each project owns a set of folders; each folder owns notes. The UI and AI context window show only data belonging to the active project.
+
+### Storage keys added
+| Key | Type | Notes |
+|---|---|---|
+| `projects` | `Project[]` | id, name, createdAt, defaultFolderId |
+| `activeProjectId` | string | persisted; restored on panel open |
+
+### Type changes
+- `NoteFolder` now has `projectId: string` (required).
+- `getNoteFolders()` auto-migrates old folders (no `projectId`) to `DEFAULT_PROJECT_ID = 'default-project'`.
+
+### New constants (lib/researchStorage.ts)
+`PROJECTS_STORAGE_KEY`, `ACTIVE_PROJECT_STORAGE_KEY`, `DEFAULT_PROJECT_ID`
+
+### New storage functions
+- `getProjects()` — creates default "General Research" project on first call.
+- `createProject(name)` — atomically creates project + its "General" folder.
+- `deleteProject(id)` — cascades: removes project, all its folders, all their notes. Default project is protected.
+- `createNoteFolder(name, projectId)` — projectId is now required (defaults to DEFAULT_PROJECT_ID).
+
+### App.tsx derived state
+```ts
+const activeProject    = projects.find(p => p.id === activeProjectId);
+const projectFolders   = folders.filter(f => f.projectId === activeProjectId);
+const projectNotes     = notes.filter(n => activeProjectFolderIds.has(n.folderId));
+```
+All UI (folder list, note list, WikiLinks, move-note dropdown) uses `projectFolders`/`projectNotes` — never raw `folders`/`notes`.
+
+### UI
+- **Project bar**: narrow bar above the header — `<select>` dropdown, "+" new project button, trash delete button.
+- **New project**: modal with name input.
+- **Delete project**: severe multi-step modal showing exact folder/note counts, "Delete everything" CTA.
+- Switching projects resets `selectedFolderId` to the new project's `defaultFolderId`.
+
 ## Key Files
 
 - `entrypoints/content.ts`: Injects the highlight toolbar and extracts page text for page-note capture.
@@ -188,13 +225,49 @@ Called from all four save paths in App.tsx:
 - `saveNewNote` — `await resolveNoteTitle(rawTitle, folderId)`
 - `saveEditNote` — `await resolveNoteTitle(trimmedTitle, folderId, note.id)`
 
+## Source Tab (formerly Citations)
+
+The third tab is now labelled **Source** (internal value `'source'`). It shows:
+- A source header: page title + canonical URL
+- APA and MLA citation rows, each with a **Copy** and a **Save to Notes** (bookmark-plus) button
+- The save button targets the active project's `sourcesFolderId` (the "Sources" folder)
+
+## Sources Folder
+
+Every project now has a `sourcesFolderId` (alongside `defaultFolderId`). The Sources folder is created:
+- On fresh install (alongside "General") via `getNoteFolders()`
+- When creating a new project via `createProject()`
+- For existing projects via `ensureProjectSourcesFolders()` — a migration called at startup in `loadInitialData()`
+
+`SOURCES_FOLDER_ID = 'sources'` is the hardcoded ID for the default project's Sources folder (mirrors the `DEFAULT_FOLDER_ID = 'default'` pattern).
+
+## Note Pinning & Reordering
+
+Each note article now has a two-column layout:
+- **Left (24 px)**: `note-reorder` strip with up (↑) and down (↓) ghost buttons
+- **Right**: `note-content` — all existing header + body content
+
+Pinned notes float to the top of the folder view (`sortedVisibleNotes = [...pinned, ...unpinned]`). Up/down arrows reorder within each group (pinned ↔ pinned, unpinned ↔ unpinned). Arrows are disabled at group boundaries.
+
+Storage: `pinQuickNote(id, pinned)`, `swapQuickNotes(idA, idB)` in `researchStorage.ts`.
+
+Visual: pinned notes get a blue left border (`.note-item--pinned`); the pin button turns blue when active (`.note-pin-btn--active`).
+
+## BibTeX Export (`.bbt`)
+
+`lib/bibtex.ts` — pure formatting module:
+- `formatBibtex(note, keyOverride?)` — single `@misc` entry with author, title, organization, year, url, howpublished, note (accessed date)
+- `formatBibtexBundle(notes[])` — full file with header comment and deduplicated citation keys
+
+"Export .bbt" button in the notes toolbar exports all visible notes in the current folder. The toolbar layout is a 2-column grid with "New note" spanning full width (top row) and "Take page notes" + "Export .bbt" sharing the second row.
+
 ## Known Broken / Incomplete Features
 
-*(none currently — previous issues with note naming and dedup have been resolved)*
+*(none currently)*
 
 ## Current Branch & PR
 
-PR #3 (`feat-citations`) merged to `main`. PR #4 (`feat-citations`) open — note title naming + dedup.
+`feat-projects` branch — Phase 3 project workspaces + Source tab + pinning/reordering + .bbt export. PRs #3 and #4 (`feat-citations`) merged to `main`.
 
 ## Git/Workspace Notes
 
