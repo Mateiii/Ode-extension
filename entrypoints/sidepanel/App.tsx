@@ -1,15 +1,21 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
+  BookmarkPlus,
   BookOpen,
   Check,
   ChevronDown,
   Clipboard,
   Download,
   ExternalLink,
+  FileDown,
   FilePlus,
   FileText,
   FolderPlus,
+  Layers,
   Pencil,
+  Pin,
   Plus,
   Send,
   Settings,
@@ -21,23 +27,32 @@ import { Textarea } from '@/components/ui/textarea';
 import type { FactCheckResult } from '@/lib/factCheck';
 import type { PageMetadata } from '@/lib/pageMetadata';
 import {
+  ensureProjectSourcesFolders,
   formatCitation,
   createNoteFolder,
+  createProject,
   deleteNoteFolder,
+  deleteProject,
   deleteQuickNote,
   getNoteTitle,
+  getQuickNotes,
   moveQuickNote,
+  pinQuickNote,
   resolveNoteTitle,
   saveQuickNote,
+  swapQuickNotes,
   updateQuickNote,
+  ACTIVE_PROJECT_STORAGE_KEY,
   DEFAULT_FOLDER_ID,
-  getNoteFolders,
-  getQuickNotes,
+  DEFAULT_PROJECT_ID,
   NOTE_FOLDERS_STORAGE_KEY,
+  PROJECTS_STORAGE_KEY,
   QUICK_NOTES_STORAGE_KEY,
   type NoteFolder,
+  type Project,
   type QuickNote,
 } from '@/lib/researchStorage';
+import { formatBibtexBundle } from '@/lib/bibtex';
 import { clearPendingSidepanelAction, getPendingSidepanelAction } from '@/lib/sidepanelQueue';
 
 type ChatMessage = {
@@ -82,7 +97,7 @@ type PageNoteResultMessage = {
 };
 
 type RuntimeMessage = SelectionMessage | SelectionContextMessage | FactCheckResultMessage | PageNoteResultMessage;
-type ActiveTab = 'chat' | 'notes' | 'citations';
+type ActiveTab = 'chat' | 'notes' | 'source';
 
 const actionLabels: Record<SelectionMessage['action'], string> = {
   'ask-ai': 'Ask AI',
@@ -108,6 +123,8 @@ function App() {
   const [context, setContext] = useState<SelectionContextMessage | null>(null);
   const [notes, setNotes] = useState<QuickNote[]>([]);
   const [folders, setFolders] = useState<NoteFolder[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string>(DEFAULT_PROJECT_ID);
   const [selectedFolderId, setSelectedFolderId] = useState(DEFAULT_FOLDER_ID);
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat');
   const [isContextExpanded, setIsContextExpanded] = useState(false);
@@ -117,6 +134,9 @@ function App() {
   const [isTakingPageNotes, setIsTakingPageNotes] = useState(false);
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const [folderPendingDelete, setFolderPendingDelete] = useState<NoteFolder | null>(null);
+  const [projectPendingDelete, setProjectPendingDelete] = useState<Project | null>(null);
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
   const [toast, setToast] = useState('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
@@ -139,6 +159,11 @@ function App() {
     window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToast(''), 3000);
   };
+
+  // Persist active project ID whenever it changes
+  useEffect(() => {
+    chrome.storage.local.set({ [ACTIVE_PROJECT_STORAGE_KEY]: activeProjectId });
+  }, [activeProjectId]);
 
   useEffect(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -269,25 +294,56 @@ function App() {
       );
     });
 
-    getQuickNotes().then(setNotes);
-    getNoteFolders().then((storedFolders) => {
+    // Load all data and active project in parallel; ensureProjectSourcesFolders runs
+    // the Sources-folder migration and returns fresh projects + folders in one go.
+    const loadInitialData = async () => {
+      const [storedNotes, { projects: storedProjects, folders: storedFolders }] = await Promise.all([
+        getQuickNotes(),
+        ensureProjectSourcesFolders(),
+      ]);
+
+      const storedActiveId = await new Promise<string>((resolve) => {
+        chrome.storage.local.get([ACTIVE_PROJECT_STORAGE_KEY], (result) => {
+          resolve((result[ACTIVE_PROJECT_STORAGE_KEY] as string | undefined) ?? DEFAULT_PROJECT_ID);
+        });
+      });
+
+      setNotes(storedNotes);
       setFolders(storedFolders);
-      setSelectedFolderId((current) =>
-        storedFolders.some((folder) => folder.id === current) ? current : storedFolders[0]?.id ?? DEFAULT_FOLDER_ID,
-      );
-    });
+      setProjects(storedProjects);
+
+      const validProjectId = storedProjects.some((p) => p.id === storedActiveId)
+        ? storedActiveId
+        : storedProjects[0]?.id ?? DEFAULT_PROJECT_ID;
+
+      setActiveProjectId(validProjectId);
+
+      const activeProject = storedProjects.find((p) => p.id === validProjectId);
+      const projectFolders = storedFolders.filter((f) => f.projectId === validProjectId);
+
+      setSelectedFolderId((current) => {
+        const currentIsInProject = projectFolders.some((f) => f.id === current);
+        return currentIsInProject
+          ? current
+          : activeProject?.defaultFolderId ?? projectFolders[0]?.id ?? DEFAULT_FOLDER_ID;
+      });
+    };
+
+    void loadInitialData();
 
     const listener = (
       changes: Record<string, { oldValue?: unknown; newValue?: unknown }>,
       areaName: string,
     ) => {
       if (areaName !== 'local') return;
-      if (!changes[QUICK_NOTES_STORAGE_KEY] && !changes[NOTE_FOLDERS_STORAGE_KEY]) return;
       if (changes[QUICK_NOTES_STORAGE_KEY]) {
         setNotes((changes[QUICK_NOTES_STORAGE_KEY].newValue as QuickNote[] | undefined) ?? []);
       }
       if (changes[NOTE_FOLDERS_STORAGE_KEY]) {
         setFolders((changes[NOTE_FOLDERS_STORAGE_KEY].newValue as NoteFolder[] | undefined) ?? []);
+      }
+      if (changes[PROJECTS_STORAGE_KEY]) {
+        setProjects((changes[PROJECTS_STORAGE_KEY].newValue as Project[] | undefined) ?? []);
       }
     };
 
@@ -499,6 +555,16 @@ function App() {
     setInput('');
   };
 
+  // Derived: project-scoped data
+  const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
+  const projectFolders = folders.filter((f) => f.projectId === activeProjectId);
+  const activeProjectFolderIds = new Set(projectFolders.map((f) => f.id));
+  const projectNotes = notes.filter((n) =>
+    activeProjectFolderIds.has(n.folderId || DEFAULT_FOLDER_ID),
+  );
+
+  const projectSourcesFolder = projectFolders.find((f) => f.id === activeProject?.sourcesFolderId);
+
   const currentCitationFallback = {
     title: context?.title,
     url: context?.url,
@@ -518,33 +584,73 @@ function App() {
   const copyText = (value: string) => {
     navigator.clipboard?.writeText(value);
   };
+
   const contextTitle = context?.metadata?.title || context?.title || 'No page selected';
   const contextUrl = context?.metadata?.canonicalUrl || context?.url || 'No URL captured yet';
-  const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) ?? folders[0];
-  const visibleNotes = notes.filter((note) => (note.folderId || DEFAULT_FOLDER_ID) === (selectedFolder?.id || DEFAULT_FOLDER_ID));
+  const selectedFolder = projectFolders.find((f) => f.id === selectedFolderId) ?? projectFolders[0];
+  const visibleNotes = projectNotes.filter(
+    (note) => (note.folderId || DEFAULT_FOLDER_ID) === (selectedFolder?.id || DEFAULT_FOLDER_ID),
+  );
 
+  const sortedVisibleNotes = [
+    ...visibleNotes.filter((n) => n.pinned),
+    ...visibleNotes.filter((n) => !n.pinned),
+  ];
+
+  // Project handlers
+  const switchProject = (projectId: string) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+    setActiveProjectId(projectId);
+    const newProjectFolders = folders.filter((f) => f.projectId === projectId);
+    const defaultFolder = newProjectFolders.find((f) => f.id === project.defaultFolderId) ?? newProjectFolders[0];
+    setSelectedFolderId(defaultFolder?.id ?? DEFAULT_FOLDER_ID);
+  };
+
+  const handleCreateProject = async () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    const project = await createProject(name);
+    setActiveProjectId(project.id);
+    setSelectedFolderId(project.defaultFolderId);
+    setIsCreatingProject(false);
+    setNewProjectName('');
+    showToast(`Project "${project.name}" created.`);
+  };
+
+  const confirmDeleteProject = async () => {
+    const project = projectPendingDelete;
+    if (!project || project.id === DEFAULT_PROJECT_ID) {
+      setProjectPendingDelete(null);
+      return;
+    }
+    await deleteProject(project.id);
+    setActiveProjectId(DEFAULT_PROJECT_ID);
+    setSelectedFolderId(DEFAULT_FOLDER_ID);
+    setProjectPendingDelete(null);
+    showToast(`Project "${project.name}" and all its data deleted.`);
+  };
+
+  // Folder handlers
   const handleCreateFolder = async () => {
-    const folder = await createNoteFolder(newFolderName);
-    // Do not optimistically add here: the chrome.storage.onChanged listener
-    // already syncs the folder list from storage. Adding it again would
-    // duplicate the folder (and both copies render as selected).
+    const folder = await createNoteFolder(newFolderName, activeProjectId);
     setSelectedFolderId(folder.id);
     setNewFolderName('');
   };
 
   const confirmDeleteFolder = async () => {
     const folder = folderPendingDelete;
-    if (!folder || folder.id === DEFAULT_FOLDER_ID) {
+    if (!folder || folder.id === activeProject?.defaultFolderId || folder.id === DEFAULT_FOLDER_ID) {
       setFolderPendingDelete(null);
       return;
     }
 
     await deleteNoteFolder(folder.id);
     if (selectedFolderId === folder.id) {
-      setSelectedFolderId(DEFAULT_FOLDER_ID);
+      setSelectedFolderId(activeProject?.defaultFolderId ?? DEFAULT_FOLDER_ID);
     }
     setFolderPendingDelete(null);
-    showToast(`Folder “${folder.name}” deleted.`);
+    showToast(`Folder "${folder.name}" deleted.`);
   };
 
   const toggleNoteCollapsed = (noteId: string) => {
@@ -601,6 +707,17 @@ function App() {
     downloadBlob(md, `${slug}.md`, 'text/markdown');
   };
 
+  const exportFolderBibtex = () => {
+    if (sortedVisibleNotes.length === 0) {
+      showToast('No notes in this folder to export.');
+      return;
+    }
+    const content = formatBibtexBundle(sortedVisibleNotes);
+    const folderName = selectedFolder?.name || 'notes';
+    const slug = folderName.replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '') || 'notes';
+    downloadBlob(content, `${slug}.bbt`, 'text/plain');
+  };
+
   const handleDeleteNote = async (note: QuickNote) => {
     setNotes((current) => current.filter((item) => item.id !== note.id));
     await deleteQuickNote(note.id);
@@ -613,7 +730,7 @@ function App() {
       current.map((item) => (item.id === note.id ? { ...item, folderId } : item)),
     );
     await moveQuickNote(note.id, folderId);
-    const target = folders.find((folder) => folder.id === folderId);
+    const target = projectFolders.find((f) => f.id === folderId);
     showToast(`Moved to ${target?.name || 'folder'}.`);
   };
 
@@ -681,8 +798,50 @@ function App() {
 
   const cancelCreateNote = () => setIsCreatingNote(false);
 
+  const handlePinNote = (note: QuickNote) => {
+    const newPinned = !note.pinned;
+    setNotes((current) => current.map((n) => n.id === note.id ? { ...n, pinned: newPinned } : n));
+    void pinQuickNote(note.id, newPinned);
+    showToast(newPinned ? 'Note pinned.' : 'Note unpinned.');
+  };
+
+  const handleReorderNote = (note: QuickNote, direction: 'up' | 'down') => {
+    // Reorder within the note's own group (pinned ↔ pinned, unpinned ↔ unpinned)
+    const group = sortedVisibleNotes.filter((n) => !!n.pinned === !!note.pinned);
+    const idx = group.findIndex((n) => n.id === note.id);
+    if (direction === 'up' && idx <= 0) return;
+    if (direction === 'down' && idx >= group.length - 1) return;
+    const swapWith = group[direction === 'up' ? idx - 1 : idx + 1];
+    setNotes((current) => {
+      const next = [...current];
+      const iA = next.findIndex((n) => n.id === note.id);
+      const iB = next.findIndex((n) => n.id === swapWith.id);
+      if (iA === -1 || iB === -1) return current;
+      [next[iA], next[iB]] = [next[iB], next[iA]];
+      return next;
+    });
+    void swapQuickNotes(note.id, swapWith.id);
+  };
+
+  const saveCitationAsNote = async (label: string, value: string) => {
+    const sourcesFolder = projectFolders.find((f) => f.id === activeProject?.sourcesFolderId);
+    const targetFolderId = sourcesFolder?.id ?? selectedFolderIdRef.current ?? DEFAULT_FOLDER_ID;
+    const rawTitle = `${label}: ${contextTitle}`;
+    const customTitle = await resolveNoteTitle(rawTitle, targetFolderId);
+    await saveQuickNote({
+      text: value,
+      kind: 'citation',
+      folderId: targetFolderId,
+      metadata: context?.metadata,
+      url: context?.url,
+      title: context?.title,
+      customTitle,
+    });
+    showToast(`${label} citation saved to notes.`);
+  };
+
   const navigateToNote = (noteId: string) => {
-    const target = notes.find((n) => n.id === noteId);
+    const target = projectNotes.find((n) => n.id === noteId);
     if (!target) return;
     setSelectedFolderId(target.folderId || DEFAULT_FOLDER_ID);
     setActiveTab('notes');
@@ -690,8 +849,54 @@ function App() {
     setScrollToNoteId(noteId);
   };
 
+  // Counts for project delete confirmation
+  const pendingDeleteFolderCount = projectPendingDelete
+    ? folders.filter((f) => f.projectId === projectPendingDelete.id).length
+    : 0;
+  const pendingDeleteNoteCount = projectPendingDelete
+    ? notes.filter((n) => {
+        const f = folders.find((folder) => folder.id === (n.folderId || DEFAULT_FOLDER_ID));
+        return f?.projectId === projectPendingDelete.id;
+      }).length
+    : 0;
+
   return (
     <main className="sidepanel-shell">
+
+      {/* Project switcher bar */}
+      <div className="project-bar">
+        <Layers aria-hidden="true" className="project-bar-icon" size={14} />
+        <select
+          aria-label="Active project"
+          className="project-select"
+          onChange={(e) => switchProject(e.target.value)}
+          value={activeProjectId}
+        >
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+        <button
+          aria-label="New project"
+          className="project-bar-btn"
+          onClick={() => { setIsCreatingProject(true); setNewProjectName(''); }}
+          title="New project"
+          type="button"
+        >
+          <Plus aria-hidden="true" size={14} />
+        </button>
+        <button
+          aria-label="Delete project"
+          className="project-bar-btn project-bar-btn--danger"
+          disabled={activeProjectId === DEFAULT_PROJECT_ID}
+          onClick={() => setProjectPendingDelete(activeProject ?? null)}
+          title={activeProjectId === DEFAULT_PROJECT_ID ? 'Cannot delete the default project' : 'Delete project'}
+          type="button"
+        >
+          <Trash2 aria-hidden="true" size={14} />
+        </button>
+      </div>
+
       <header className="panel-header">
         <div>
           <p className="eyebrow">Research Workspace</p>
@@ -760,12 +965,12 @@ function App() {
           Notes
         </button>
         <button
-          className={activeTab === 'citations' ? 'active' : ''}
-          onClick={() => setActiveTab('citations')}
+          className={activeTab === 'source' ? 'active' : ''}
+          onClick={() => setActiveTab('source')}
           type="button"
         >
           <Clipboard aria-hidden="true" size={15} />
-          Citations
+          Source
         </button>
       </nav>
 
@@ -829,6 +1034,15 @@ function App() {
               <FilePlus aria-hidden="true" size={15} />
               {isTakingPageNotes ? 'Taking notes...' : 'Take page notes'}
             </Button>
+            <Button
+              onClick={exportFolderBibtex}
+              title="Export all notes in this folder as BibTeX"
+              type="button"
+              variant="outline"
+            >
+              <FileDown aria-hidden="true" size={15} />
+              Export .bbt
+            </Button>
           </div>
 
           {noteStatus ? <p className="note-status">{noteStatus}</p> : null}
@@ -853,9 +1067,9 @@ function App() {
           </div>
 
           <div className="folder-list" aria-label="Note folders">
-            {folders.map((folder) => {
-              const count = notes.filter((note) => (note.folderId || DEFAULT_FOLDER_ID) === folder.id).length;
-              const isDefault = folder.id === DEFAULT_FOLDER_ID;
+            {projectFolders.map((folder) => {
+              const count = projectNotes.filter((note) => (note.folderId || DEFAULT_FOLDER_ID) === folder.id).length;
+              const isDefault = folder.id === activeProject?.defaultFolderId || folder.id === DEFAULT_FOLDER_ID;
 
               return (
                 <div
@@ -919,169 +1133,218 @@ function App() {
               </div>
             </div>
           ) : null}
-          {visibleNotes.length === 0 && !isCreatingNote ? (
+          {sortedVisibleNotes.length === 0 && !isCreatingNote ? (
             <p className="empty-state">Take notes from the current page or save a highlighted passage.</p>
           ) : (
-            visibleNotes.map((note) => {
+            sortedVisibleNotes.map((note) => {
               const isCollapsed = !expandedNotes.has(note.id);
-
               const isEditing = editingNoteId === note.id;
 
+              // Determine position within the note's own group (pinned / unpinned)
+              const group = sortedVisibleNotes.filter((n) => !!n.pinned === !!note.pinned);
+              const groupIdx = group.findIndex((n) => n.id === note.id);
+              const isFirstInGroup = groupIdx === 0;
+              const isLastInGroup = groupIdx === group.length - 1;
+
               return (
-                <article className={`note-item ${isCollapsed ? 'collapsed' : ''} ${note.kind === 'citation' ? 'note-item--citation' : ''}`} id={`note-${note.id}`} key={note.id}>
-                  <header>
-                    <strong>{getNoteTitle(note)}</strong>
-                    <span className="note-type-label">
-                      {note.kind === 'page' ? 'Page notes' : note.kind === 'citation' ? 'Citation' : note.kind === 'manual' ? 'Note' : 'Selection note'}
-                      {note.edited ? <Pencil aria-label="Edited" className="note-edited-icon" size={10} /> : null}
-                    </span>
-                    <time dateTime={note.createdAt}>
-                      {new Intl.DateTimeFormat('en-US', {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      }).format(new Date(note.createdAt))}
-                    </time>
-                    <div className="note-button-row">
-                      <Button
-                        aria-label="Export note as Markdown"
-                        className="note-icon-btn"
-                        disabled={isEditing}
-                        onClick={() => exportNote(note)}
-                        size="icon"
-                        type="button"
-                        variant="outline"
-                      >
-                        <Download aria-hidden="true" size={14} />
-                      </Button>
-                      <Button
-                        aria-label="Copy note to clipboard"
-                        className="note-icon-btn"
-                        disabled={isEditing}
-                        onClick={() => { copyText(note.text); showToast('Copied to clipboard.'); }}
-                        size="icon"
-                        type="button"
-                        variant="outline"
-                      >
-                        <Clipboard aria-hidden="true" size={14} />
-                      </Button>
-                      {note.kind !== 'citation' ? (
+                <article
+                  className={`note-item ${isCollapsed ? 'collapsed' : ''} ${note.kind === 'citation' ? 'note-item--citation' : ''} ${note.pinned ? 'note-item--pinned' : ''}`}
+                  id={`note-${note.id}`}
+                  key={note.id}
+                >
+                  {/* Left column — reorder arrows */}
+                  <div className="note-reorder">
+                    <Button
+                      aria-label="Move note up"
+                      className="note-reorder-btn"
+                      disabled={isEditing || isFirstInGroup}
+                      onClick={() => handleReorderNote(note, 'up')}
+                      size="icon"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <ArrowUp aria-hidden="true" size={12} />
+                    </Button>
+                    <Button
+                      aria-label="Move note down"
+                      className="note-reorder-btn"
+                      disabled={isEditing || isLastInGroup}
+                      onClick={() => handleReorderNote(note, 'down')}
+                      size="icon"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <ArrowDown aria-hidden="true" size={12} />
+                    </Button>
+                  </div>
+
+                  {/* Right column — all note content */}
+                  <div className="note-content">
+                    <header>
+                      <strong>{getNoteTitle(note)}</strong>
+                      <span className="note-type-label">
+                        {note.kind === 'page' ? 'Page notes' : note.kind === 'citation' ? 'Citation' : note.kind === 'manual' ? 'Note' : 'Selection note'}
+                        {note.edited ? <Pencil aria-label="Edited" className="note-edited-icon" size={10} /> : null}
+                      </span>
+                      <time dateTime={note.createdAt}>
+                        {new Intl.DateTimeFormat('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        }).format(new Date(note.createdAt))}
+                      </time>
+                      <div className="note-button-row">
                         <Button
-                          aria-label="Edit note"
+                          aria-label={note.pinned ? 'Unpin note' : 'Pin note'}
+                          className={`note-icon-btn ${note.pinned ? 'note-pin-btn--active' : ''}`}
+                          disabled={isEditing}
+                          onClick={() => handlePinNote(note)}
+                          size="icon"
+                          title={note.pinned ? 'Unpin' : 'Pin to top'}
+                          type="button"
+                          variant="outline"
+                        >
+                          <Pin aria-hidden="true" size={14} />
+                        </Button>
+                        <Button
+                          aria-label="Export note as Markdown"
                           className="note-icon-btn"
                           disabled={isEditing}
-                          onClick={() => startEditNote(note)}
+                          onClick={() => exportNote(note)}
                           size="icon"
                           type="button"
                           variant="outline"
                         >
-                          <Pencil aria-hidden="true" size={14} />
+                          <Download aria-hidden="true" size={14} />
                         </Button>
-                      ) : null}
-                      <Button
-                        aria-label="Delete note"
-                        className="note-icon-btn note-delete"
-                        disabled={isEditing}
-                        onClick={() => handleDeleteNote(note)}
-                        size="icon"
-                        type="button"
-                        variant="outline"
-                      >
-                        <Trash2 aria-hidden="true" size={14} />
-                      </Button>
-                      <Button
-                        aria-expanded={!isCollapsed}
-                        aria-label={isCollapsed ? 'Expand note' : 'Collapse note'}
-                        className="note-icon-btn note-collapse-toggle"
-                        disabled={isEditing}
-                        onClick={() => toggleNoteCollapsed(note.id)}
-                        size="icon"
-                        type="button"
-                        variant="outline"
-                      >
-                        <ChevronDown aria-hidden="true" size={14} />
-                      </Button>
-                    </div>
-                  </header>
-                  {isCollapsed ? null : isEditing ? (
-                    <div className="note-edit-area">
-                      <input
-                        className="note-title-input"
-                        value={editingTitleText}
-                        onChange={(e) => setEditingTitleText(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Escape') cancelEditNote(); }}
-                        placeholder="Note title"
-                        type="text"
-                      />
-                      <Textarea
-                        autoFocus
-                        value={editingText}
-                        onChange={(e) => setEditingText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Escape') cancelEditNote();
-                          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveEditNote(note);
-                        }}
-                        rows={Math.max(3, editingText.split('\n').length + 1)}
-                      />
-                      <div className="note-edit-actions">
-                        <Button onClick={() => saveEditNote(note)} type="button">
-                          <Check aria-hidden="true" size={13} />
-                          Save
+                        <Button
+                          aria-label="Copy note to clipboard"
+                          className="note-icon-btn"
+                          disabled={isEditing}
+                          onClick={() => { copyText(note.text); showToast('Copied to clipboard.'); }}
+                          size="icon"
+                          type="button"
+                          variant="outline"
+                        >
+                          <Clipboard aria-hidden="true" size={14} />
                         </Button>
-                        <Button onClick={cancelEditNote} type="button" variant="outline">
-                          Cancel
+                        {note.kind !== 'citation' ? (
+                          <Button
+                            aria-label="Edit note"
+                            className="note-icon-btn"
+                            disabled={isEditing}
+                            onClick={() => startEditNote(note)}
+                            size="icon"
+                            type="button"
+                            variant="outline"
+                          >
+                            <Pencil aria-hidden="true" size={14} />
+                          </Button>
+                        ) : null}
+                        <Button
+                          aria-label="Delete note"
+                          className="note-icon-btn note-delete"
+                          disabled={isEditing}
+                          onClick={() => handleDeleteNote(note)}
+                          size="icon"
+                          type="button"
+                          variant="outline"
+                        >
+                          <Trash2 aria-hidden="true" size={14} />
+                        </Button>
+                        <Button
+                          aria-expanded={!isCollapsed}
+                          aria-label={isCollapsed ? 'Expand note' : 'Collapse note'}
+                          className="note-icon-btn note-collapse-toggle"
+                          disabled={isEditing}
+                          onClick={() => toggleNoteCollapsed(note.id)}
+                          size="icon"
+                          type="button"
+                          variant="outline"
+                        >
+                          <ChevronDown aria-hidden="true" size={14} />
                         </Button>
                       </div>
-                    </div>
-                  ) : (
-                    <>
-                      <p>
-                        {note.text.split(/(\[\[[^\]\n]+\]\])/).map((part, i) => {
-                          const match = part.match(/^\[\[([^\]\n]+)\]\]$/);
-                          if (match) {
-                            const name = match[1];
-                            const target = notes.find((n) => getNoteTitle(n).toLowerCase() === name.toLowerCase());
-                            return target ? (
-                              <span
-                                className="note-link"
-                                key={i}
-                                onClick={() => navigateToNote(target.id)}
-                                role="button"
-                                tabIndex={0}
-                              >{name}</span>
-                            ) : (
-                              <span className="note-link note-link--missing" key={i}>{part}</span>
-                            );
-                          }
-                          return <span key={i}>{part}</span>;
-                        })}
-                      </p>
-                      {note.metadata?.canonicalUrl || note.url ? (
-                        <a href={note.metadata?.canonicalUrl || note.url} rel="noreferrer" target="_blank">
-                          {note.metadata?.canonicalUrl || note.url}
-                        </a>
-                      ) : null}
-                      <footer className="note-actions">
-                        <label className="note-move">
-                          <span className="sr-only">Move note to folder</span>
-                          <select
-                            aria-label="Move note to folder"
-                            onChange={(event) => handleMoveNote(note, event.target.value)}
-                            value={note.folderId || DEFAULT_FOLDER_ID}
-                          >
-                            {folders.map((folder) => (
-                              <option key={folder.id} value={folder.id}>
-                                {folder.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </footer>
-                    </>
-                  )}
+                    </header>
+                    {isCollapsed ? null : isEditing ? (
+                      <div className="note-edit-area">
+                        <input
+                          className="note-title-input"
+                          value={editingTitleText}
+                          onChange={(e) => setEditingTitleText(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Escape') cancelEditNote(); }}
+                          placeholder="Note title"
+                          type="text"
+                        />
+                        <Textarea
+                          autoFocus
+                          value={editingText}
+                          onChange={(e) => setEditingText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') cancelEditNote();
+                            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveEditNote(note);
+                          }}
+                          rows={Math.max(3, editingText.split('\n').length + 1)}
+                        />
+                        <div className="note-edit-actions">
+                          <Button onClick={() => saveEditNote(note)} type="button">
+                            <Check aria-hidden="true" size={13} />
+                            Save
+                          </Button>
+                          <Button onClick={cancelEditNote} type="button" variant="outline">
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p>
+                          {note.text.split(/(\[\[[^\]\n]+\]\])/).map((part, i) => {
+                            const match = part.match(/^\[\[([^\]\n]+)\]\]$/);
+                            if (match) {
+                              const name = match[1];
+                              const target = projectNotes.find((n) => getNoteTitle(n).toLowerCase() === name.toLowerCase());
+                              return target ? (
+                                <span
+                                  className="note-link"
+                                  key={i}
+                                  onClick={() => navigateToNote(target.id)}
+                                  role="button"
+                                  tabIndex={0}
+                                >{name}</span>
+                              ) : (
+                                <span className="note-link note-link--missing" key={i}>{part}</span>
+                              );
+                            }
+                            return <span key={i}>{part}</span>;
+                          })}
+                        </p>
+                        {note.metadata?.canonicalUrl || note.url ? (
+                          <a href={note.metadata?.canonicalUrl || note.url} rel="noreferrer" target="_blank">
+                            {note.metadata?.canonicalUrl || note.url}
+                          </a>
+                        ) : null}
+                        <footer className="note-actions">
+                          <label className="note-move">
+                            <span className="sr-only">Move note to folder</span>
+                            <select
+                              aria-label="Move note to folder"
+                              onChange={(event) => handleMoveNote(note, event.target.value)}
+                              value={note.folderId || DEFAULT_FOLDER_ID}
+                            >
+                              {projectFolders.map((folder) => (
+                                <option key={folder.id} value={folder.id}>
+                                  {folder.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </footer>
+                      </>
+                    )}
+                  </div>
                 </article>
-
               );
             })
           )}
@@ -1089,23 +1352,45 @@ function App() {
         </section>
       ) : null}
 
-      {activeTab === 'citations' ? (
-        <section className="citations-area" aria-label="Citations">
+      {activeTab === 'source' ? (
+        <section className="citations-area" aria-label="Source">
+          <div className="citation-source-info">
+            <p className="eyebrow">Source</p>
+            <p className="citation-source-title">{contextTitle}</p>
+            {contextUrl !== 'No URL captured yet' ? (
+              <a className="citation-source-url" href={contextUrl} rel="noreferrer" target="_blank">
+                {contextUrl}
+              </a>
+            ) : null}
+          </div>
           {citationRows.map((citation) => (
             <article className="citation-item" key={citation.label}>
               <div>
                 <h3>{citation.label}</h3>
                 <p>{citation.value}</p>
               </div>
-              <Button
-                aria-label={`Copy ${citation.label} citation`}
-                onClick={() => copyText(citation.value)}
-                size="icon"
-                type="button"
-                variant="outline"
-              >
-                <Clipboard aria-hidden="true" size={15} />
-              </Button>
+              <div className="citation-actions">
+                <Button
+                  aria-label={`Copy ${citation.label} citation`}
+                  onClick={() => copyText(citation.value)}
+                  size="icon"
+                  title="Copy to clipboard"
+                  type="button"
+                  variant="outline"
+                >
+                  <Clipboard aria-hidden="true" size={15} />
+                </Button>
+                <Button
+                  aria-label={`Save ${citation.label} citation to notes`}
+                  onClick={() => saveCitationAsNote(citation.label, citation.value)}
+                  size="icon"
+                  title={`Save to ${projectSourcesFolder?.name ?? 'Sources'} folder`}
+                  type="button"
+                  variant="outline"
+                >
+                  <BookmarkPlus aria-hidden="true" size={15} />
+                </Button>
+              </div>
             </article>
           ))}
         </section>
@@ -1125,6 +1410,7 @@ function App() {
         </Button>
       </form>
 
+      {/* Folder delete confirmation */}
       {folderPendingDelete ? (
         <div
           className="modal-overlay"
@@ -1140,7 +1426,7 @@ function App() {
           >
             <h2 id="delete-folder-title">Delete folder?</h2>
             <p>
-              “{folderPendingDelete.name}” will be deleted. Its notes will be moved to the General
+              "{folderPendingDelete.name}" will be deleted. Its notes will be moved to the General
               folder, not deleted.
             </p>
             <div className="modal-actions">
@@ -1149,6 +1435,90 @@ function App() {
               </Button>
               <Button type="button" className="modal-danger" onClick={confirmDeleteFolder}>
                 Delete folder
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Project delete confirmation */}
+      {projectPendingDelete ? (
+        <div
+          className="modal-overlay"
+          onClick={() => setProjectPendingDelete(null)}
+          role="presentation"
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-project-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="delete-project-title">Delete project?</h2>
+            <p className="modal-warning-label">This action is permanent and cannot be undone.</p>
+            <p>
+              Deleting <strong>"{projectPendingDelete.name}"</strong> will permanently erase:
+            </p>
+            <ul className="modal-delete-list">
+              <li>{pendingDeleteFolderCount} folder{pendingDeleteFolderCount !== 1 ? 's' : ''}</li>
+              <li>{pendingDeleteNoteCount} note{pendingDeleteNoteCount !== 1 ? 's' : ''} and citation{pendingDeleteNoteCount !== 1 ? 's' : ''}</li>
+            </ul>
+            <p>There is no recovery. All research data in this project will be gone forever.</p>
+            <div className="modal-actions">
+              <Button type="button" variant="outline" onClick={() => setProjectPendingDelete(null)}>
+                Cancel
+              </Button>
+              <Button type="button" className="modal-danger" onClick={confirmDeleteProject}>
+                Delete everything
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* New project modal */}
+      {isCreatingProject ? (
+        <div
+          className="modal-overlay"
+          onClick={() => { setIsCreatingProject(false); setNewProjectName(''); }}
+          role="presentation"
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-project-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="new-project-title">New project</h2>
+            <input
+              autoFocus
+              className="note-title-input"
+              onChange={(e) => setNewProjectName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { setIsCreatingProject(false); setNewProjectName(''); }
+                if (e.key === 'Enter') handleCreateProject();
+              }}
+              placeholder="Project name"
+              style={{ marginBottom: '16px' }}
+              type="text"
+              value={newProjectName}
+            />
+            <div className="modal-actions">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => { setIsCreatingProject(false); setNewProjectName(''); }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                disabled={!newProjectName.trim()}
+                onClick={handleCreateProject}
+              >
+                Create project
               </Button>
             </div>
           </div>
