@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import React, { FormEvent, useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -12,7 +12,6 @@ import {
   FileDown,
   FilePlus,
   FileText,
-  FolderPlus,
   Layers,
   Pencil,
   Pin,
@@ -53,6 +52,7 @@ import {
   type QuickNote,
 } from '@/lib/researchStorage';
 import { formatBibtexBundle } from '@/lib/bibtex';
+import { streamPageChat } from '@/lib/pageChat';
 import { clearPendingSidepanelAction, getPendingSidepanelAction } from '@/lib/sidepanelQueue';
 
 type ChatMessage = {
@@ -118,6 +118,144 @@ function getActionKey(message: Pick<SelectionMessage, 'action' | 'text'>) {
   return `${message.action}:${message.text}`;
 }
 
+/** Matches [label](#scroll-quote=exact phrase) emitted by the AI. */
+const SCROLL_QUOTE_RE = /\[([^\]]+)\]\(#scroll-quote=([^)]+)\)/g;
+
+/**
+ * Short phrases that mean "navigate to the text you just quoted" rather than
+ * asking a new question. Checked before sending to the AI.
+ */
+const NAV_INTENT_RE =
+  /^(take me there|show me( where)?|go there|scroll to (it|that)|bring me there|navigate there|go to that( part)?|jump to (it|that)|where is (it|that)|show (me )?(where it is|that part)|highlight it|jump there|find it on the page)[\s.!?]*$/i;
+
+/**
+ * Execute a scroll-and-highlight in the active browser tab.
+ * Extracted to module level so both `sendChatMessage` and `handleScrollToQuote`
+ * can call it without ordering issues.
+ */
+function executeScrollToQuote(quote: string) {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tabId = tabs[0]?.id;
+    if (!tabId) return;
+    chrome.scripting.executeScript(
+      {
+        target: { tabId },
+        func: (quotedText: string) => {
+          // 1. Native Chromium "Scroll to Text Fragment" attempt.
+          try {
+            window.location.hash = `:~:text=${encodeURIComponent(quotedText)}`;
+          } catch {
+            /* some pages disallow hash writes — fall through to DOM search */
+          }
+
+          // 2. Reliable fallback: case-insensitive DOM text search + smooth scroll + highlight.
+          const win = window as Window & { find?: (...a: unknown[]) => boolean };
+          const found =
+            win.find?.(quotedText, false, false, true, false, true, false) ??
+            win.find?.(quotedText.slice(0, 60), false, false, true, false, true, false);
+          if (!found) return;
+
+          const sel = window.getSelection();
+          if (!sel || sel.rangeCount === 0) return;
+
+          const node = sel.getRangeAt(0).commonAncestorContainer;
+          const el: HTMLElement | null =
+            node.nodeType === Node.ELEMENT_NODE
+              ? (node as HTMLElement)
+              : (node as Text).parentElement;
+          if (!el) return;
+
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+          const prevOutline = el.style.outline;
+          const prevBorderRadius = el.style.borderRadius;
+          el.style.outline = '2px solid rgba(251, 191, 36, 0.85)';
+          el.style.borderRadius = '3px';
+          setTimeout(() => {
+            el.style.outline = prevOutline;
+            el.style.borderRadius = prevBorderRadius;
+          }, 2000);
+        },
+        args: [quote],
+      },
+      () => { void chrome.runtime.lastError; },
+    );
+  });
+}
+
+/**
+ * Split a single line of AI text into an array of React nodes, turning any
+ * #scroll-quote markdown links into clickable <a> elements.
+ */
+function parseScrollLinks(
+  text: string,
+  onQuoteClick: (quote: string) => void,
+  keyPrefix: string,
+): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  SCROLL_QUOTE_RE.lastIndex = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = SCROLL_QUOTE_RE.exec(text)) !== null) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+
+    const label = match[1];
+    const rawQuote = match[2];
+    const quote = decodeURIComponent(rawQuote);
+
+    nodes.push(
+      <a
+        className="scroll-quote-link"
+        href="#"
+        key={`${keyPrefix}-sq-${match.index}`}
+        onClick={(e) => { e.preventDefault(); onQuoteClick(quote); }}
+        title="Click to jump to this text on the page"
+      >
+        {label}
+      </a>,
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes.length ? nodes : [text];
+}
+
+/**
+ * Fallback post-processor: if the model returned plain-quoted text that exists
+ * verbatim in the page, convert it to a scroll-quote link automatically.
+ * Handles ASCII `"…"` and curly `"…"` quote pairs.
+ */
+const PLAIN_QUOTE_RE = /["“]([^"“”\n]{10,200})["”]/g;
+
+function injectScrollQuotes(text: string, pageText: string): string {
+  if (!pageText) return text;
+  const pageNorm = pageText.toLowerCase();
+
+  return text.replace(PLAIN_QUOTE_RE, (match, quoted: string) => {
+    const phrase = quoted.trim().replace(/[.!?,;:]+$/, ''); // strip trailing punctuation
+    if (phrase.length < 10) return match;
+    // Skip if already wrapped as a scroll-quote link
+    if (text.includes(`(#scroll-quote=${phrase}`)) return match;
+    if (pageNorm.includes(phrase.toLowerCase())) {
+      return `[${phrase}](#scroll-quote=${phrase})`;
+    }
+    return match;
+  });
+}
+
+const QUICK_ACTIONS = [
+  {
+    label: 'Summarize Page',
+    prompt: 'Summarize the main points of this page in clear bullet points.',
+  },
+  {
+    label: 'List Limitations',
+    prompt: 'What are the key limitations, weaknesses, or caveats mentioned on this page?',
+  },
+] as const;
+
 function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [context, setContext] = useState<SelectionContextMessage | null>(null);
@@ -130,6 +268,7 @@ function App() {
   const [isContextExpanded, setIsContextExpanded] = useState(false);
   const [input, setInput] = useState('');
   const [newFolderName, setNewFolderName] = useState('');
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [noteStatus, setNoteStatus] = useState('');
   const [isTakingPageNotes, setIsTakingPageNotes] = useState(false);
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
@@ -145,10 +284,12 @@ function App() {
   const [newNoteTitle, setNewNoteTitle] = useState('');
   const [newNoteText, setNewNoteText] = useState('');
   const [scrollToNoteId, setScrollToNoteId] = useState<string | null>(null);
+  const [isChatLoading, setIsChatLoading] = useState(false);
   const handledActionKeysRef = useRef<Set<string>>(new Set());
   const toastTimerRef = useRef<number | undefined>(undefined);
   const selectedFolderIdRef = useRef(selectedFolderId);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const chatAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     selectedFolderIdRef.current = selectedFolderId;
@@ -533,27 +674,126 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [scrollToNoteId]);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const sendChatMessage = async (rawContent: string) => {
+    const content = rawContent.trim();
+    if (!content || isChatLoading) return;
 
-    const content = input.trim();
-    if (!content) return;
+    setInput('');
+    setActiveTab('chat');
+
+    // Navigation intent: user said "take me there" / "show me" etc.
+    // Scroll to the first scroll-quote in the last assistant message instead of calling the AI.
+    if (NAV_INTENT_RE.test(content)) {
+      const lastAiContent = [...messages].reverse().find((m) => m.role === 'assistant' && m.content)?.content ?? '';
+      SCROLL_QUOTE_RE.lastIndex = 0;
+      const match = SCROLL_QUOTE_RE.exec(lastAiContent);
+      if (match) {
+        const quote = decodeURIComponent(match[2]);
+        executeScrollToQuote(quote);
+        setMessages((current) => [
+          ...current,
+          { id: crypto.randomUUID(), role: 'user', content },
+          { id: crypto.randomUUID(), role: 'assistant', content: 'Scrolling to the source text on the page.' },
+        ]);
+        return;
+      }
+    }
+
+    const userMsgId = crypto.randomUUID();
+    const assistantMsgId = crypto.randomUUID();
 
     setMessages((current) => [
       ...current,
-      {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content,
-      },
-      {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: 'AI chat transport is ready for the backend integration phase.',
-      },
+      { id: userMsgId, role: 'user', content },
+      { id: assistantMsgId, role: 'assistant', content: '', loading: true },
     ]);
-    setInput('');
+    setIsChatLoading(true);
+
+    // Cancel any in-flight request before starting a new one
+    chatAbortRef.current?.abort();
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
+
+    try {
+      // Ask the background service worker for the page text.
+      // The background uses its proven requestPageText() path (same as "Take page notes").
+      const pageText = await new Promise<string>((resolve) => {
+        chrome.runtime.sendMessage({ type: 'request-page-text' }, (response) => {
+          void chrome.runtime.lastError;
+          const text =
+            typeof response === 'object' &&
+            response !== null &&
+            'text' in response &&
+            typeof (response as { text: unknown }).text === 'string'
+              ? (response as { text: string }).text
+              : '';
+          resolve(text);
+        });
+      });
+
+      // Build conversational memory: prior real turns + this new user message,
+      // mapped to OpenAI {role, content} shape, capped at the last 6 turns.
+      const history = [
+        ...messages
+          .filter(
+            (m) =>
+              (m.role === 'user' || m.role === 'assistant') &&
+              m.content.trim() !== '' &&
+              !m.loading &&
+              !m.factCheck &&
+              m.id !== 'welcome',
+          )
+          .map((m) => ({ role: m.role, content: m.content })),
+        { role: 'user' as const, content },
+      ].slice(-6);
+
+      // Stream the response, updating the placeholder message on every chunk
+      let accum = '';
+      await streamPageChat(
+        pageText,
+        history,
+        (delta) => {
+          accum += delta;
+          const snapshot = accum;
+          setMessages((current) =>
+            current.map((m) =>
+              m.id === assistantMsgId ? { ...m, content: snapshot, loading: false } : m,
+            ),
+          );
+        },
+        controller.signal,
+      );
+
+      // Post-process: if the model used plain quotes for page text, convert them
+      // to scroll-quote links. Also clears loading for the zero-chunks case.
+      const finalContent = injectScrollQuotes(accum, pageText);
+      setMessages((current) =>
+        current.map((m) =>
+          m.id === assistantMsgId ? { ...m, content: finalContent, loading: false } : m,
+        ),
+      );
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      const errorMsg = err instanceof Error ? err.message : 'Something went wrong.';
+      setMessages((current) =>
+        current.map((m) =>
+          m.id === assistantMsgId
+            ? { ...m, content: '', loading: false, error: errorMsg }
+            : m,
+        ),
+      );
+    } finally {
+      setIsChatLoading(false);
+    }
   };
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void sendChatMessage(input);
+  };
+
+  /** Scroll the active browser tab to the quoted text and briefly highlight it. */
+  const handleScrollToQuote = (quote: string) => executeScrollToQuote(quote);
 
   // Derived: project-scoped data
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
@@ -636,6 +876,7 @@ function App() {
     const folder = await createNoteFolder(newFolderName, activeProjectId);
     setSelectedFolderId(folder.id);
     setNewFolderName('');
+    setIsCreatingFolder(false);
   };
 
   const confirmDeleteFolder = async () => {
@@ -907,46 +1148,6 @@ function App() {
         </Button>
       </header>
 
-      <section className={`context-box ${isContextExpanded ? 'expanded' : 'collapsed'}`} aria-label="Current page context">
-        <div className="context-header">
-          <div>
-            <p className="eyebrow">Context</p>
-            <h2>{contextTitle}</h2>
-            {!isContextExpanded ? <p className="context-preview">{context?.text || contextUrl}</p> : null}
-          </div>
-          <Button
-            aria-expanded={isContextExpanded}
-            aria-label={isContextExpanded ? 'Collapse context' : 'Expand context'}
-            className="context-toggle"
-            onClick={() => setIsContextExpanded((current) => !current)}
-            size="icon"
-            type="button"
-            variant="outline"
-          >
-            <ChevronDown aria-hidden="true" size={15} />
-          </Button>
-        </div>
-
-        {isContextExpanded ? (
-          <>
-            <dl className="metadata-list">
-              <div>
-                <dt>Author</dt>
-                <dd>{context?.metadata?.author || 'Unknown author'}</dd>
-              </div>
-              <div>
-                <dt>Canonical URL</dt>
-                <dd>{contextUrl}</dd>
-              </div>
-            </dl>
-
-            <blockquote>
-              {context?.text || 'Highlight a sentence on the current page to send it here.'}
-            </blockquote>
-          </>
-        ) : null}
-      </section>
-
       <nav className="panel-tabs" aria-label="Sidepanel sections">
         <button
           className={activeTab === 'chat' ? 'active' : ''}
@@ -981,13 +1182,14 @@ function App() {
               <span>{message.role === 'assistant' ? 'Øde' : 'You'}</span>
               {message.factCheck ? null : message.content.split('\n\n').map((para, i) => (
                 <p key={i}>
-                  {para.split('\n').flatMap((line, j) =>
-                    j === 0 ? [line] : [<br key={j} />, line]
-                  )}
+                  {para.split('\n').flatMap((line, j) => {
+                    const nodes = parseScrollLinks(line, handleScrollToQuote, `${message.id}-${i}-${j}`);
+                    return j === 0 ? nodes : [<br key={`br-${i}-${j}`} />, ...nodes];
+                  })}
                 </p>
               ))}
-              {message.loading ? (
-                <div className="loading-dots" aria-label="Waiting for fact-check result">
+              {message.loading && !message.content ? (
+                <div className="loading-dots" aria-label="Loading response">
                   <i />
                   <i />
                   <i />
@@ -1047,25 +1249,6 @@ function App() {
 
           {noteStatus ? <p className="note-status">{noteStatus}</p> : null}
 
-          <div className="folder-create">
-            <input
-              aria-label="New folder name"
-              onChange={(event) => setNewFolderName(event.target.value)}
-              placeholder="New folder"
-              value={newFolderName}
-            />
-            <Button
-              aria-label="Create folder"
-              disabled={newFolderName.trim().length === 0}
-              onClick={handleCreateFolder}
-              size="icon"
-              type="button"
-              variant="outline"
-            >
-              <FolderPlus aria-hidden="true" size={15} />
-            </Button>
-          </div>
-
           <div className="folder-list" aria-label="Note folders">
             {projectFolders.map((folder) => {
               const count = projectNotes.filter((note) => (note.folderId || DEFAULT_FOLDER_ID) === folder.id).length;
@@ -1097,6 +1280,14 @@ function App() {
                 </div>
               );
             })}
+            <button
+              aria-label="New folder"
+              className="folder-add-btn"
+              onClick={() => setIsCreatingFolder(true)}
+              type="button"
+            >
+              <Plus aria-hidden="true" size={14} />
+            </button>
           </div>
           </div>
 
@@ -1353,7 +1544,48 @@ function App() {
       ) : null}
 
       {activeTab === 'source' ? (
-        <section className="citations-area" aria-label="Source">
+        <div className="source-area">
+          <section className={`context-box ${isContextExpanded ? 'expanded' : 'collapsed'}`} aria-label="Current page context">
+            <div className="context-header">
+              <div>
+                <p className="eyebrow">Context</p>
+                <h2>{contextTitle}</h2>
+                {!isContextExpanded ? <p className="context-preview">{context?.text || contextUrl}</p> : null}
+              </div>
+              <Button
+                aria-expanded={isContextExpanded}
+                aria-label={isContextExpanded ? 'Collapse context' : 'Expand context'}
+                className="context-toggle"
+                onClick={() => setIsContextExpanded((current) => !current)}
+                size="icon"
+                type="button"
+                variant="outline"
+              >
+                <ChevronDown aria-hidden="true" size={15} />
+              </Button>
+            </div>
+
+            {isContextExpanded ? (
+              <>
+                <dl className="metadata-list">
+                  <div>
+                    <dt>Author</dt>
+                    <dd>{context?.metadata?.author || 'Unknown author'}</dd>
+                  </div>
+                  <div>
+                    <dt>Canonical URL</dt>
+                    <dd>{contextUrl}</dd>
+                  </div>
+                </dl>
+
+                <blockquote>
+                  {context?.text || 'Highlight a sentence on the current page to send it here.'}
+                </blockquote>
+              </>
+            ) : null}
+          </section>
+
+          <section className="citations-area" aria-label="Source">
           <div className="citation-source-info">
             <p className="eyebrow">Source</p>
             <p className="citation-source-title">{contextTitle}</p>
@@ -1393,22 +1625,47 @@ function App() {
               </div>
             </article>
           ))}
-        </section>
+          </section>
+        </div>
       ) : null}
 
-      <form className="input-bar" onSubmit={handleSubmit}>
-        <Textarea
-          aria-label="Ask a research question"
-          onChange={(event) => setInput(event.target.value)}
-          placeholder="Ask about this page..."
-          rows={2}
-          value={input}
-        />
-        <Button type="submit" aria-label="Send message">
-          <Send aria-hidden="true" size={16} />
-          Send
-        </Button>
-      </form>
+      <div className="input-section">
+        {activeTab === 'chat' ? (
+          <div className="chat-chips" aria-label="Quick actions" role="toolbar">
+            {QUICK_ACTIONS.map(({ label, prompt }) => (
+              <button
+                className="chat-chip"
+                disabled={isChatLoading}
+                key={label}
+                onClick={() => { void sendChatMessage(prompt); }}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <form className="input-bar" onSubmit={handleSubmit}>
+          <Textarea
+            aria-label="Ask a research question"
+            disabled={isChatLoading}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void sendChatMessage(input);
+              }
+            }}
+            placeholder="Ask about this page..."
+            rows={2}
+            value={input}
+          />
+          <Button disabled={isChatLoading} type="submit" aria-label="Send message">
+            <Send aria-hidden="true" size={16} />
+            Send
+          </Button>
+        </form>
+      </div>
 
       {/* Folder delete confirmation */}
       {folderPendingDelete ? (
@@ -1519,6 +1776,54 @@ function App() {
                 onClick={handleCreateProject}
               >
                 Create project
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* New folder modal */}
+      {isCreatingFolder ? (
+        <div
+          className="modal-overlay"
+          onClick={() => { setIsCreatingFolder(false); setNewFolderName(''); }}
+          role="presentation"
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-folder-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="new-folder-title">New folder</h2>
+            <input
+              autoFocus
+              className="note-title-input"
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { setIsCreatingFolder(false); setNewFolderName(''); }
+                if (e.key === 'Enter' && newFolderName.trim()) handleCreateFolder();
+              }}
+              placeholder="Folder name"
+              style={{ marginBottom: '16px' }}
+              type="text"
+              value={newFolderName}
+            />
+            <div className="modal-actions">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => { setIsCreatingFolder(false); setNewFolderName(''); }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                disabled={!newFolderName.trim()}
+                onClick={handleCreateFolder}
+              >
+                Create folder
               </Button>
             </div>
           </div>
