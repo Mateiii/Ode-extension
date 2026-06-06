@@ -91,7 +91,7 @@ export default defineBackground(() => {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   });
 
-  chrome.runtime.onMessage.addListener((message, sender) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || typeof message !== 'object') return;
 
     if (message.type === 'selection-action') {
@@ -189,6 +189,21 @@ export default defineBackground(() => {
         });
 
       return true;
+    }
+
+    // Sidepanel chat requests raw page text via the background so the
+    // scripting call runs in the service-worker context (proven reliable).
+    if (message.type === 'request-page-text') {
+      getActiveTab()
+        .then((tab) => {
+          if (!tab?.id) return { text: '' };
+          return requestPageText(tab.id)
+            .then((page) => ({ text: page.text ?? '' }))
+            .catch(() => ({ text: '' }));
+        })
+        .then((result) => sendResponse(result))
+        .catch(() => sendResponse({ text: '' }));
+      return true; // keep message channel open for async response
     }
 
     if (message.type === 'selection-context') {

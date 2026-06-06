@@ -297,7 +297,7 @@ async function analyzeWithOpenAi(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: dependencies.openAiModel || 'gpt-4.1-mini',
+      model: dependencies.openAiModel || 'gpt-4o-mini',
       input: [
         {
           role: 'system',

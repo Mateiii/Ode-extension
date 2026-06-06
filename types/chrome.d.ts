@@ -22,7 +22,7 @@ declare const chrome: {
       addListener(listener: ChromeMessageListener): void;
       removeListener(listener: ChromeMessageListener): void;
     };
-    sendMessage(message: unknown, callback?: () => void): void;
+    sendMessage(message: unknown, callback?: (response?: unknown) => void): void;
     lastError: { message?: string } | undefined;
   };
   tabs: {
@@ -48,8 +48,9 @@ declare const chrome: {
     };
   };
   scripting: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     executeScript<T>(
-      injection: { target: { tabId: number }; func: () => T },
+      injection: { target: { tabId: number }; func: (...args: any[]) => T; args?: unknown[] },
       callback?: (results: Array<{ result: T }>) => void,
     ): Promise<Array<{ result: T }>>;
   };

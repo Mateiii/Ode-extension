@@ -83,7 +83,7 @@ export async function summarizePageNotes(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: resolvedDeps.openAiModel || 'gpt-4.1-mini',
+        model: resolvedDeps.openAiModel || 'gpt-4o-mini',
         input: [
           {
             role: 'system',
