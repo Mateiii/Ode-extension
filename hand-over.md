@@ -6,6 +6,7 @@ Ode is a Chromium MV3 research assistant extension built with WXT + React. It ha
 
 - content script selection toolbar: Ask AI, Fact Check, Save to Notes, Cite
 - Chrome side panel UI with Chat / Notes / Source tabs
+- **page-context AI chat**: streaming answers grounded in the active tab's text, with conversation memory and click-to-jump source citations
 - background service worker for privileged actions, storage, Tavily/OpenAI calls, and active-tab page capture
 - local `chrome.storage.local` persistence for projects, folders, notes, and pending sidepanel actions
 
@@ -18,31 +19,32 @@ npm run build     # production build
 npm run compile   # tsc type-check only (no emit)
 ```
 
-Fact-check env vars go in `.env` at repo root:
+Env vars go in `.env` at repo root (used by fact-check, page notes, and AI chat):
 
 ```bash
 WXT_TAVILY_API_KEY=...
 WXT_OPENAI_API_KEY=...
-WXT_OPENAI_MODEL=gpt-4.1-mini
+WXT_OPENAI_MODEL=gpt-4o-mini   # optional; all OpenAI calls default to gpt-4o-mini
 ```
 
-`.env` is gitignored.
+`.env` is gitignored. `WXT_OPENAI_API_KEY` is read via `import.meta.env` and baked into the build bundle.
 
 ## Key Files
 
 | File | Purpose |
 |---|---|
 | `entrypoints/content.ts` | Injects the highlight toolbar; extracts page text for page-note capture |
-| `entrypoints/background.ts` | Routes selection actions, opens side panel, runs fact checks, captures page notes, formats citation text |
+| `entrypoints/background.ts` | Routes selection actions, opens side panel, runs fact checks, captures page notes, formats citation text, serves `request-page-text` for chat |
 | `entrypoints/sidepanel/App.tsx` | Main React side panel — all UI: chat, notes, folders, Source tab, projects |
 | `entrypoints/sidepanel/style.css` | Side panel styles |
 | `lib/researchStorage.ts` | All storage helpers; canonical `QuickNote` / `NoteFolder` / `Project` types; `getNoteTitle`, `resolveNoteTitle`, `formatCitation` |
+| `lib/pageChat.ts` | AI chat: streaming OpenAI Chat Completions (SSE), system-prompt assembly, `ChatTurn` history type |
 | `lib/bibtex.ts` | BibTeX formatting — `formatBibtex(note)`, `formatBibtexBundle(notes[])` |
 | `lib/factCheck.ts` | Tavily search + OpenAI analysis + fallback fact-check |
 | `lib/pageNotes.ts` | AI page-note summarisation (OpenAI) + boilerplate cleaning + extractive fallback |
 | `lib/pageMetadata.ts` | Page metadata scraping — title, author, canonical URL, date, site name |
 | `lib/sidepanelQueue.ts` | Pending-action handoff for cold-opening the side panel |
-| `types/chrome.d.ts` | Local Chrome API typings |
+| `types/chrome.d.ts` | Local Chrome API typings (incl. `executeScript` `args`, `sendMessage` response callback) |
 
 ---
 
@@ -173,6 +175,36 @@ All UI uses the scoped variables above — **never** raw `folders` / `notes`.
 
 ---
 
+## AI Chat (page-context)
+
+The Chat tab is a streaming, page-grounded assistant. Core logic: `sendChatMessage()` in `App.tsx` + `streamPageChat()` in `lib/pageChat.ts`.
+
+### Flow per message
+
+1. **Nav-intent shortcut** — if the message matches `NAV_INTENT_RE` ("take me there", "show me", etc.), no API call is made; it scrolls to the last cited quote (see Quote jumping) and returns.
+2. **Page harvest** — App.tsx sends `{ type: 'request-page-text' }` to the background, which runs `getActiveTab()` + `requestPageText()` (service-worker `chrome.scripting` — reliable; the in-sidepanel `executeScript` returned empty and was abandoned). Returns `{ text }`.
+3. **History** — last 6 real turns (excludes the welcome seed, loading placeholders, and fact-check cards) mapped to OpenAI `{ role, content }` `ChatTurn[]`.
+4. **Stream** — `streamPageChat(pageText, history, onChunk, signal)` POSTs to `https://api.openai.com/v1/chat/completions` with `stream: true`, parses the SSE byte stream, and calls `onChunk(delta)` per token. Tokens render into the placeholder assistant message live; loading dots show only while `loading && !content`.
+5. **Post-process** — `injectScrollQuotes(text, pageText)` converts any plain-quoted page text the model didn't already wrap into scroll-quote links.
+
+`chatAbortRef` aborts any in-flight stream before starting a new one. `AbortError` is swallowed.
+
+### Prompt (`buildSystemPrompt`)
+
+System message frames an "academic research co-pilot" with two rules: **semantic reasoning** (match synonyms/themes, don't refuse when thematically relevant material exists) and **citation hooks** (cite page text as `[label](#scroll-quote=verbatim phrase)`, never plain quotes). Page text is truncated to `PAGE_TEXT_LIMIT` (12 000 chars). A short citation reminder is folded into the latest user turn to keep `gpt-4o-mini` compliant.
+
+### Quick-action chips
+
+Two static chips above the input (`QUICK_ACTIONS`): **Summarize Page** and **List Limitations**. Clicking submits the canned prompt via `sendChatMessage`. Disabled while a stream is in flight.
+
+### Quote jumping (click-to-source)
+
+- The model emits `[label](#scroll-quote=verbatim)` links. `parseScrollLinks()` renders the markdown into `<a class="scroll-quote-link">` (the raw quote lives in the click handler, not the DOM; a `↗` is appended via CSS).
+- Clicking calls `handleScrollToQuote` → `executeScrollToQuote(quote)`, which `chrome.scripting.executeScript`s into the **active tab**: tries the native text fragment (`location.hash = ':~:text=' + encodeURIComponent(...)`), then falls back to `window.find` + `scrollIntoView({block:'center'})` + a 2 s amber outline highlight.
+- `SCROLL_QUOTE_RE` is the shared matcher for both rendering and the nav-intent shortcut.
+
+---
+
 ## Notes Features
 
 ### Note article layout
@@ -225,6 +257,10 @@ The create-form (`div.note-item.note-create-form`) is a `<div>` not `<article>`,
 2-column CSS grid (`.notes-toolbar`):
 - Row 1: **New note** (spans both columns, full width)
 - Row 2: **Take page notes** | **Export .bbt**
+
+### Folder creation
+
+New folders are created via a **`+` circle button** (`.folder-add-btn`) at the end of the folder chip row — not an always-visible input. Clicking it opens a name modal (`isCreatingFolder` state), Enter/“Create folder” submits via `handleCreateFolder` → `createNoteFolder(name, activeProjectId)`, Escape/overlay cancels.
 
 ### [[WikiLink]] References
 
@@ -296,11 +332,12 @@ Called from all save paths: `handleSelectionAction` (save-note, extract-citation
 
 ## Source Tab
 
-The third panel tab is labelled **Source** (internal `ActiveTab` value: `'source'`). It shows:
+The third panel tab is labelled **Source** (internal `ActiveTab` value: `'source'`). The tab nav sits directly under the header (the page **context box** was moved out of the global header into this tab to declutter). It shows, wrapped in `.source-area`:
 
-1. **Source header** — current page title + canonical URL (`.citation-source-info`)
-2. **APA row** — formatted citation + Copy button + Save to Notes button
-3. **MLA row** — same
+1. **Context box** — collapsible current-page context (title, author, canonical URL, captured selection), at the top
+2. **Source header** — current page title + canonical URL (`.citation-source-info`)
+3. **APA row** — formatted citation + Copy button + Save to Notes button
+4. **MLA row** — same
 
 The **Save to Notes** button (`BookmarkPlus` icon) calls `saveCitationAsNote(label, value)`:
 - Targets `projectSourcesFolder?.id ?? selectedFolderIdRef.current ?? DEFAULT_FOLDER_ID`
@@ -359,12 +396,14 @@ formatBibtexBundle(notes: QuickNote[]): string
 
 ## Known Broken / Incomplete Features
 
-*(none currently)*
+- **AI chat not yet verified end-to-end in a live browser.** Code type-checks and builds; runtime behavior (streaming, memory, quote-jump) was not observed because this machine's Chrome has developer mode disabled by enterprise policy (`ExtensionDeveloperModeSettings`), which blocks loading the unpacked extension. Verify on an unmanaged Chrome/Chromium or via manual "Load unpacked".
 
 ## Current Branch & PR
 
-`feat-projects` branch — PR #5 open against `main`.
-PRs #3 and #4 (`feat-citations`) already merged to `main`.
+`feat-document-integration` branch — branched from `main` (clean, no commits yet).
+Merged to `main`: PR #5 (Source tab / pinning / .bbt / Sources folder) and PR #6 (page-context AI chat + Notes UI cleanup). PRs #3/#4 (`feat-citations`) merged earlier.
+
+> Note: GitHub's repo **default branch is set to `feat/notes-overhaul`**, but trunk in practice is `main` (all PRs target it). Consider fixing the default-branch setting.
 
 ## Git/Workspace Notes
 
