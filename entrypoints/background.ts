@@ -85,6 +85,25 @@ function requestPageText(tabId: number): Promise<ExtractedPage> {
 export default defineBackground(() => {
   chrome.runtime.onInstalled.addListener(() => {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+
+    // Re-create context menu items cleanly on every install / update.
+    chrome.contextMenus.removeAll(() => {
+      chrome.contextMenus.create({
+        id: 'ode-save-note',
+        title: 'Save to Øde Notes',
+        contexts: ['selection'],
+      });
+      chrome.contextMenus.create({
+        id: 'ode-fact-check',
+        title: 'Fact Check with Øde',
+        contexts: ['selection'],
+      });
+      chrome.contextMenus.create({
+        id: 'ode-cite',
+        title: 'Cite with Øde',
+        contexts: ['selection'],
+      });
+    });
   });
 
   chrome.runtime.onStartup.addListener(() => {
@@ -215,6 +234,104 @@ export default defineBackground(() => {
         url: sender.tab?.url,
         title: sender.tab?.title,
       });
+    }
+  });
+
+  // Context menu — right-click actions on selected text, including inside
+  // Chrome's native PDF viewer where content scripts cannot be injected.
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    const text = info.selectionText?.trim();
+    if (!text) return;
+
+    const tabId = tab?.id;
+    const url   = tab?.url ?? info.pageUrl;
+    const title = tab?.title;
+
+    // ── Save to Notes ────────────────────────────────────────────────────────
+    if (info.menuItemId === 'ode-save-note') {
+      const msg = {
+        type: 'sidepanel-selection-action' as const,
+        action: 'save-note' as const,
+        text, title, url,
+      };
+      openSidePanel(tabId)
+        .then(async () => {
+          await setPendingSidepanelAction(msg);
+          chrome.runtime.sendMessage(msg);
+        })
+        .catch(() => { void chrome.runtime.lastError; });
+      return;
+    }
+
+    // ── Fact Check ───────────────────────────────────────────────────────────
+    if (info.menuItemId === 'ode-fact-check') {
+      const FACT_CHECK_MAX_LENGTH = 400;
+
+      // Base shape the sidepanel expects for a fact-check result.
+      const resultBase = {
+        type: 'sidepanel-fact-check-result' as const,
+        text, title, url,
+      };
+      // Announcement creates the loading bubble in chat; its action key must
+      // match what the result message carries so the placeholder resolves.
+      const announcement = {
+        type: 'sidepanel-selection-action' as const,
+        action: 'fact-check' as const,
+        text, title, url,
+      };
+
+      (async () => {
+        await openSidePanel(tabId);
+
+        if (text.length > FACT_CHECK_MAX_LENGTH) {
+          // Still announce first so the loading bubble appears, then immediately
+          // resolve it with an error — user sees a proper error card in chat.
+          await setPendingSidepanelAction(announcement);
+          chrome.runtime.sendMessage(announcement);
+          chrome.runtime.sendMessage({
+            ...resultBase,
+            error: 'Selection is too long to fact-check (max 400 characters).',
+          });
+          return;
+        }
+
+        await setPendingSidepanelAction(announcement);
+        chrome.runtime.sendMessage(announcement);
+
+        try {
+          const result = await factCheckClaim(text);
+          chrome.runtime.sendMessage({ ...resultBase, result });
+        } catch (err) {
+          chrome.runtime.sendMessage({
+            ...resultBase,
+            error: err instanceof Error ? err.message : 'Fact check failed.',
+          });
+        }
+      })().catch(() => { void chrome.runtime.lastError; });
+      return;
+    }
+
+    // ── Cite ─────────────────────────────────────────────────────────────────
+    if (info.menuItemId === 'ode-cite') {
+      // No content-script metadata available for PDF / native viewer pages;
+      // formatCitation gracefully falls back to title + url.
+      const fallback = { title, url };
+      const apa = formatCitation('apa', undefined, fallback);
+      const mla = formatCitation('mla', undefined, fallback);
+      const citationText = `> "${text}"\n\nAPA: ${apa}\n\nMLA: ${mla}`;
+
+      const msg = {
+        type: 'sidepanel-selection-action' as const,
+        action: 'extract-citation' as const,
+        text, title, url, citationText,
+      };
+      openSidePanel(tabId)
+        .then(async () => {
+          await setPendingSidepanelAction(msg);
+          chrome.runtime.sendMessage(msg);
+        })
+        .catch(() => { void chrome.runtime.lastError; });
+      return;
     }
   });
 });

@@ -27,7 +27,16 @@ declare const chrome: {
   };
   tabs: {
     query(queryInfo: { active?: boolean; currentWindow?: boolean }, callback: (tabs: Array<{ id?: number; title?: string; url?: string }>) => void): void;
+    get(tabId: number, callback: (tab: { id?: number; title?: string; url?: string; active?: boolean }) => void): void;
     sendMessage(tabId: number, message: unknown, callback: (response?: unknown) => void): void;
+    onActivated: {
+      addListener(listener: (activeInfo: { tabId: number; windowId: number }) => void): void;
+      removeListener(listener: (activeInfo: { tabId: number; windowId: number }) => void): void;
+    };
+    onUpdated: {
+      addListener(listener: (tabId: number, changeInfo: { status?: string; url?: string }, tab: { id?: number; active?: boolean; title?: string; url?: string }) => void): void;
+      removeListener(listener: (tabId: number, changeInfo: { status?: string; url?: string }, tab: { id?: number; active?: boolean; title?: string; url?: string }) => void): void;
+    };
   };
   storage: {
     local: {
@@ -57,5 +66,21 @@ declare const chrome: {
   sidePanel: {
     open(options: { tabId: number }): Promise<void>;
     setPanelBehavior(options: { openPanelOnActionClick: boolean }): void;
+  };
+  contextMenus: {
+    create(properties: {
+      id: string;
+      title: string;
+      contexts: string[];
+    }): void;
+    removeAll(callback?: () => void): void;
+    onClicked: {
+      addListener(
+        listener: (
+          info: { menuItemId: string; selectionText?: string; pageUrl?: string },
+          tab?: { id?: number; title?: string; url?: string },
+        ) => void,
+      ): void;
+    };
   };
 };

@@ -10,8 +10,8 @@ export default defineConfig({
   manifest: {
     name: 'Ode AI Research Assistant',
     description: 'A Chromium side panel research assistant for AI chat, fact checks, notes, and citations.',
-    permissions: ['sidePanel', 'storage', 'activeTab', 'scripting'],
-    host_permissions: ['http://*/*', 'https://*/*'],
+    permissions: ['sidePanel', 'storage', 'activeTab', 'scripting', 'contextMenus'],
+    host_permissions: ['file://*/*', 'http://*/*', 'https://*/*'],
     action: {
       default_title: 'Open Ode Research',
     },

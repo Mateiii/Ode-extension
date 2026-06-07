@@ -1172,3 +1172,69 @@ article.note-item {
   border-color: #334155;
   box-shadow: 0 0 0 3px rgba(51, 65, 85, 0.12);
 }
+
+/* File dropzone */
+.file-dropzone {
+  align-items: center;
+  border-bottom: 1px solid #e2e8f0;
+  border-top: 1px solid #e2e8f0;
+  color: #64748b;
+  cursor: pointer;
+  display: flex;
+  font-size: 11.5px;
+  gap: 6px;
+  justify-content: center;
+  padding: 7px 12px;
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.file-dropzone:hover,
+.file-dropzone--over {
+  background: #f0f9ff;
+  color: #0284c7;
+}
+
+.file-dropzone--loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Active file banner inside the chat scroll area */
+.file-source-banner {
+  align-items: center;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  color: #0369a1;
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+  margin: 10px 12px 4px;
+  padding: 7px 10px;
+}
+
+.file-source-banner strong {
+  font-weight: 600;
+}
+
+.file-source-banner span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-source-dismiss {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 auto;
+  padding: 2px;
+}
+
+.file-source-dismiss:hover {
+  color: #0f172a;
+}
