@@ -1698,8 +1698,275 @@ article.note-item {
   transition: background 120ms;
 }
 
-.settings-upgrade-cta:hover {
+.settings-upgrade-cta:hover:not(:disabled) {
   background: var(--color-ochre-hover);
+}
+
+.settings-upgrade-cta:disabled {
+  background: var(--color-border);
+  color: var(--color-faint);
+  cursor: not-allowed;
+}
+
+/* Panel header actions — wraps Settings + Account icon buttons */
+.panel-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* Account / Login panel */
+.account-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.account-intro {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 0 8px;
+  text-align: center;
+}
+
+.account-intro-icon {
+  color: var(--color-muted);
+}
+
+.account-intro-text {
+  color: var(--color-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  max-width: 220px;
+}
+
+/* Sign in / Sign up tab toggle */
+.auth-mode-tabs {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  display: flex;
+  overflow: hidden;
+}
+
+.auth-mode-tab {
+  background: transparent;
+  border: none;
+  color: var(--color-muted);
+  cursor: pointer;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 0;
+  transition: background 120ms, color 120ms;
+}
+
+.auth-mode-tab + .auth-mode-tab {
+  border-left: 1px solid var(--color-border);
+}
+
+.auth-mode-tab:hover:not(.active) {
+  background: var(--color-hover-bg);
+  color: var(--color-ink);
+}
+
+.auth-mode-tab.active {
+  background: var(--color-ochre);
+  color: var(--color-white);
+}
+
+/* "Back to sign in" link after signup confirmation */
+.auth-mode-link {
+  background: transparent;
+  border: none;
+  color: var(--color-link);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+  text-align: center;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.auth-mode-link:hover {
+  color: var(--color-ochre);
+}
+
+/* Auth form */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auth-label {
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.auth-input {
+  background: var(--color-white);
+  border: 1px solid var(--color-border-light);
+  border-radius: 8px;
+  color: var(--color-ink);
+  font-size: 13px;
+  min-height: 36px;
+  outline: none;
+  padding: 0 10px;
+  transition: border-color 120ms;
+  width: 100%;
+}
+
+.auth-input:focus {
+  border-color: var(--color-ochre);
+  box-shadow: 0 0 0 3px oklch(0.51 0.11 89 / 0.12);
+}
+
+.auth-error {
+  background: oklch(0.97 0.02 29);
+  border: 1px solid oklch(0.88 0.06 29);
+  border-radius: 6px;
+  color: var(--color-danger);
+  font-size: 12px;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.auth-submit {
+  margin-top: 4px;
+  width: 100%;
+}
+
+/* Logged-in user card */
+.account-user-card {
+  align-items: center;
+  background: var(--color-white);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.account-user-avatar {
+  align-items: center;
+  background: var(--color-hover-bg);
+  border-radius: 50%;
+  color: var(--color-muted);
+  display: flex;
+  flex-shrink: 0;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.account-user-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.account-user-email {
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-premium-badge {
+  align-items: center;
+  background: var(--color-ochre-tint);
+  border: 1px solid oklch(0.89 0.04 89);
+  border-radius: 100px;
+  color: var(--color-ochre-hover);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 700;
+  gap: 4px;
+  padding: 2px 7px;
+  width: fit-content;
+}
+
+.account-free-badge {
+  color: var(--color-faint);
+  font-size: 11px;
+}
+
+/* Cloud sync status indicator */
+.account-sync-status {
+  align-items: center;
+  background: oklch(0.97 0.02 145);
+  border: 1px solid oklch(0.87 0.07 145);
+  border-radius: 8px;
+  color: oklch(0.37 0.12 145);
+  display: flex;
+  font-size: 12px;
+  font-weight: 500;
+  gap: 7px;
+  padding: 9px 12px;
+}
+
+.account-sync-dot {
+  background: oklch(0.60 0.15 145);
+  border-radius: 50%;
+  flex-shrink: 0;
+  height: 7px;
+  width: 7px;
+}
+
+/* Sign out button */
+.auth-signout-btn {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  font-weight: 500;
+  gap: 6px;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  transition: background 120ms, border-color 120ms, color 120ms;
+  width: 100%;
+}
+
+.auth-signout-btn:hover {
+  background: var(--color-hover-bg);
+  border-color: var(--color-border-light);
+  color: var(--color-ink);
+}
+
+/* Dark mode adjustments */
+.dark .auth-input {
+  background: oklch(0.17 0.015 247);
+  border-color: oklch(0.30 0.018 247);
+  color: oklch(0.92 0.008 247);
+}
+
+.dark .auth-input:focus {
+  border-color: oklch(0.60 0.10 89);
+}
+
+.dark .account-user-card {
+  background: oklch(0.17 0.015 247);
+  border-color: oklch(0.30 0.018 247);
+}
+
+.dark .account-user-avatar {
+  background: oklch(0.22 0.018 247);
 }
 
 /* Settings gear button — active / pressed state */

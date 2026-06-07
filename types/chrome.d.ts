@@ -26,6 +26,7 @@ declare const chrome: {
     lastError: { message?: string } | undefined;
   };
   tabs: {
+    create(createProperties: { url?: string; active?: boolean }): Promise<{ id?: number; url?: string }>;
     query(queryInfo: { active?: boolean; currentWindow?: boolean }, callback: (tabs: Array<{ id?: number; title?: string; url?: string }>) => void): void;
     get(tabId: number, callback: (tab: { id?: number; title?: string; url?: string; active?: boolean }) => void): void;
     sendMessage(tabId: number, message: unknown, callback: (response?: unknown) => void): void;

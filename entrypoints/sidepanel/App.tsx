@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useRef, useState } from 'react';
+import React, { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -13,6 +13,7 @@ import {
   FilePlus,
   FileText,
   Layers,
+  LogIn,
   Pencil,
   Pin,
   Plus,
@@ -58,7 +59,11 @@ import { streamPageChat } from '@/lib/pageChat';
 import { clearPendingSidepanelAction, getPendingSidepanelAction } from '@/lib/sidepanelQueue';
 import { extractFileText, extractTextFromPdfUrl } from '@/lib/fileParsers';
 import { useSettings } from '@/lib/useSettings';
+import { supabase, signInWithEmail, signUpWithEmail, signOut, getIsPremiumUser, type SupabaseUser } from '@/lib/supabase';
+import { syncNoteToCloud } from '@/lib/cloudSync';
+import { openStripeCheckout } from '@/lib/stripe';
 import { SettingsPanel } from './SettingsPanel';
+import { AccountPanel } from './AccountPanel';
 
 type ChatMessage = {
   id: string;
@@ -102,9 +107,7 @@ type PageNoteResultMessage = {
 };
 
 type RuntimeMessage = SelectionMessage | SelectionContextMessage | FactCheckResultMessage | PageNoteResultMessage;
-type ActiveTab = 'chat' | 'notes' | 'source' | 'settings';
-
-const IS_PREMIUM_USER = false;
+type ActiveTab = 'chat' | 'notes' | 'source' | 'settings' | 'account';
 
 const actionLabels: Record<SelectionMessage['action'], string> = {
   'ask-ai': 'Ask AI',
@@ -322,6 +325,9 @@ function App() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [savingMessageId, setSavingMessageId] = useState<string | null>(null);
   const [saveAiFolderId, setSaveAiFolderId] = useState(DEFAULT_FOLDER_ID);
+  const [authUser, setAuthUser] = useState<SupabaseUser | null>(null);
+  const [isPremiumUser, setIsPremiumUser] = useState(false);
+  const [showPremiumUpsell, setShowPremiumUpsell] = useState(false);
   const { settings, updateSettings } = useSettings();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
@@ -331,10 +337,43 @@ function App() {
   const selectedFolderIdRef = useRef(selectedFolderId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
+  // Refs let effects with [] deps always read current auth state.
+  const isPremiumUserRef = useRef(false);
+  const authUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     selectedFolderIdRef.current = selectedFolderId;
   }, [selectedFolderId]);
+
+  useEffect(() => {
+    isPremiumUserRef.current = isPremiumUser;
+  }, [isPremiumUser]);
+
+  useEffect(() => {
+    authUserIdRef.current = authUser?.id ?? null;
+  }, [authUser]);
+
+  // Initialise Supabase auth session and subscribe to future auth changes.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setAuthUser(session.user as SupabaseUser);
+        void getIsPremiumUser().then(setIsPremiumUser);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setAuthUser(session.user as SupabaseUser);
+        void getIsPremiumUser().then(setIsPremiumUser);
+      } else {
+        setAuthUser(null);
+        setIsPremiumUser(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   // Auto-ingest web-hosted PDFs when the active tab is a PDF URL.
   useEffect(() => {
@@ -414,6 +453,18 @@ function App() {
     window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToast(''), 3000);
   };
+
+  // Wraps saveQuickNote with a fire-and-forget cloud upsert for premium users.
+  // Uses refs so it can be called safely from effects with [] deps.
+  const saveNoteWithSync = useCallback(async (
+    input: Omit<QuickNote, 'id' | 'createdAt'>,
+  ): Promise<QuickNote> => {
+    const note = await saveQuickNote(input);
+    if (isPremiumUserRef.current && authUserIdRef.current) {
+      void syncNoteToCloud(note, authUserIdRef.current).catch(() => {});
+    }
+    return note;
+  }, []);
 
   // Persist active project ID whenever it changes
   useEffect(() => {
@@ -633,7 +684,7 @@ function App() {
         const selectionCustomTitle = `[${_ts}] ${_short}`;
 
         resolveNoteTitle(selectionCustomTitle, targetFolderId)
-          .then((customTitle) => saveQuickNote({
+          .then((customTitle) => saveNoteWithSync({
             text: message.text,
             metadata: message.metadata,
             url: message.url,
@@ -675,7 +726,7 @@ function App() {
 
         const citationRawTitle = message.metadata?.title || message.title || 'Citation';
         resolveNoteTitle(citationRawTitle, targetFolderId)
-          .then((customTitle) => saveQuickNote({
+          .then((customTitle) => saveNoteWithSync({
             text: message.citationText || '',
             folderId: targetFolderId,
             kind: 'citation',
@@ -1006,6 +1057,17 @@ function App() {
 
   // Folder handlers
   const handleCreateFolder = async () => {
+    if (!isPremiumUser) {
+      // Free tier: only the 2 system folders (General + Sources) are allowed.
+      const systemIds = new Set([activeProject?.defaultFolderId, activeProject?.sourcesFolderId]);
+      const customFolderCount = projectFolders.filter((f) => !systemIds.has(f.id)).length;
+      if (customFolderCount >= 1) {
+        setIsCreatingFolder(false);
+        setNewFolderName('');
+        setShowPremiumUpsell(true);
+        return;
+      }
+    }
     const folder = await createNoteFolder(newFolderName, activeProjectId);
     setSelectedFolderId(folder.id);
     setNewFolderName('');
@@ -1137,6 +1199,9 @@ function App() {
       current.map((n) => n.id === note.id ? { ...n, ...updates, edited: true } : n),
     );
     await updateQuickNote(note.id, updates);
+    if (isPremiumUser && authUser) {
+      void syncNoteToCloud({ ...note, ...updates, edited: true }, authUser.id).catch(() => {});
+    }
     showToast(titleChanged && trimmedTitle !== editingTitleText.trim() ? `Renamed to "${trimmedTitle}".` : 'Note updated.');
   };
 
@@ -1164,7 +1229,7 @@ function App() {
     const targetFolderId = selectedFolderIdRef.current || DEFAULT_FOLDER_ID;
     const rawTitle = newNoteTitle.trim() || buildDefaultNoteTitle();
     const customTitle = await resolveNoteTitle(rawTitle, targetFolderId);
-    const note = await saveQuickNote({ text, kind: 'manual', folderId: targetFolderId, customTitle });
+    const note = await saveNoteWithSync({ text, kind: 'manual', folderId: targetFolderId, customTitle });
     setExpandedNotes((current) => { const next = new Set(current); next.add(note.id); return next; });
     setScrollToNoteId(note.id);
     showToast(customTitle !== rawTitle ? `Note created as "${customTitle}".` : 'Note created.');
@@ -1230,7 +1295,7 @@ function App() {
     const rawTitle = `[${_ts}] ${_short}`;
     try {
       const customTitle = await resolveNoteTitle(rawTitle, targetFolderId);
-      await saveQuickNote({ text: stripped, kind: 'ai-chat', folderId: targetFolderId, customTitle });
+      await saveNoteWithSync({ text: stripped, kind: 'ai-chat', folderId: targetFolderId, customTitle });
       setSavingMessageId(null);
       showToast('AI response saved to notes.');
     } catch {
@@ -1250,7 +1315,7 @@ function App() {
     const targetFolderId = sourcesFolder?.id ?? selectedFolderIdRef.current ?? DEFAULT_FOLDER_ID;
     const rawTitle = `${label}: ${contextTitle}`;
     const customTitle = await resolveNoteTitle(rawTitle, targetFolderId);
-    await saveQuickNote({
+    await saveNoteWithSync({
       text: value,
       kind: 'citation',
       folderId: targetFolderId,
@@ -1324,17 +1389,30 @@ function App() {
           <span className="panel-wordmark-mark" aria-hidden="true" />
           <h1>Øde</h1>
         </div>
-        <Button
-          aria-label={activeTab === 'settings' ? 'Close settings' : 'Open settings'}
-          aria-pressed={activeTab === 'settings'}
-          className={`settings-button${activeTab === 'settings' ? ' settings-button--active' : ''}`}
-          onClick={() => setActiveTab(activeTab === 'settings' ? 'chat' : 'settings')}
-          size="icon"
-          type="button"
-          variant="outline"
-        >
-          <Settings aria-hidden="true" size={16} />
-        </Button>
+        <div className="panel-header-actions">
+          <Button
+            aria-label={activeTab === 'account' ? 'Close account' : (authUser ? 'Account' : 'Sign in')}
+            aria-pressed={activeTab === 'account'}
+            className={`settings-button${activeTab === 'account' ? ' settings-button--active' : ''}`}
+            onClick={() => setActiveTab(activeTab === 'account' ? 'chat' : 'account')}
+            size="icon"
+            type="button"
+            variant="outline"
+          >
+            <LogIn aria-hidden="true" size={16} />
+          </Button>
+          <Button
+            aria-label={activeTab === 'settings' ? 'Close settings' : 'Open settings'}
+            aria-pressed={activeTab === 'settings'}
+            className={`settings-button${activeTab === 'settings' ? ' settings-button--active' : ''}`}
+            onClick={() => setActiveTab(activeTab === 'settings' ? 'chat' : 'settings')}
+            size="icon"
+            type="button"
+            variant="outline"
+          >
+            <Settings aria-hidden="true" size={16} />
+          </Button>
+        </div>
       </header>
 
       <nav className="panel-tabs" aria-label="Sidepanel sections">
@@ -1791,9 +1869,24 @@ function App() {
 
       {activeTab === 'settings' ? (
         <SettingsPanel
-          isPremiumUser={IS_PREMIUM_USER}
+          isPremiumUser={isPremiumUser}
           settings={settings}
           updateSettings={updateSettings}
+        />
+      ) : null}
+
+      {activeTab === 'account' ? (
+        <AccountPanel
+          isPremium={isPremiumUser}
+          onSignIn={signInWithEmail}
+          onSignOut={async () => { await signOut(); }}
+          onSignUp={signUpWithEmail}
+          onUpgradeClick={() => {
+            if (!authUser) return;
+            const opened = openStripeCheckout(authUser.id, authUser.email);
+            if (!opened) showToast('Stripe not configured — add WXT_STRIPE_PAYMENT_LINK to .env and rebuild.');
+          }}
+          user={authUser}
         />
       ) : null}
 
@@ -1895,7 +1988,7 @@ function App() {
         </div>
       ) : null}
 
-      {activeTab !== 'settings' ? <div className="input-section">
+      {activeTab !== 'settings' && activeTab !== 'account' ? <div className="input-section">
         {activeTab === 'chat' ? (
           <>
             <div className="chat-chips" aria-label="Quick actions" role="toolbar">
@@ -2124,6 +2217,36 @@ function App() {
                 onClick={handleCreateFolder}
               >
                 Create folder
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showPremiumUpsell ? (
+        <div
+          className="modal-overlay"
+          onClick={() => setShowPremiumUpsell(false)}
+        >
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Upgrade to Øde Pro</h2>
+            <p>
+              Free accounts are limited to the default folders. Upgrade to Øde Pro to create
+              unlimited custom folders and sync your research across devices.
+            </p>
+            <div className="modal-actions">
+              <Button
+                onClick={() => setShowPremiumUpsell(false)}
+                type="button"
+                variant="outline"
+              >
+                Maybe later
+              </Button>
+              <Button
+                onClick={() => { setShowPremiumUpsell(false); setActiveTab('account'); }}
+                type="button"
+              >
+                See plans →
               </Button>
             </div>
           </div>
