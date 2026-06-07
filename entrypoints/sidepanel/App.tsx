@@ -1308,9 +1308,9 @@ function App() {
       </div>
 
       <header className="panel-header">
-        <div>
-          <p className="eyebrow">Research Workspace</p>
-          <h1>Øde AI</h1>
+        <div className="panel-wordmark">
+          <span className="panel-wordmark-mark" aria-hidden="true" />
+          <h1>Øde</h1>
         </div>
         <Button className="settings-button" type="button" variant="outline" size="icon" aria-label="Open settings">
           <Settings aria-hidden="true" size={16} />

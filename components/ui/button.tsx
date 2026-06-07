@@ -4,13 +4,27 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2',
+  [
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-semibold',
+    'transition-[background-color,border-color,color] duration-[120ms]',
+    'disabled:pointer-events-none disabled:opacity-[0.55]',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ochre)] focus-visible:ring-offset-2',
+  ].join(' '),
   {
     variants: {
       variant: {
-        default: 'bg-slate-950 text-white hover:bg-slate-800',
-        outline: 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50',
-        ghost: 'text-slate-700 hover:bg-slate-100',
+        default: [
+          'bg-[var(--color-ochre)] text-[var(--color-white)]',
+          'hover:bg-[var(--color-ochre-hover)]',
+        ].join(' '),
+        outline: [
+          'border border-[var(--color-border-light)] bg-[var(--color-white)] text-[var(--color-muted)]',
+          'hover:bg-[var(--color-hover-bg)] hover:border-[var(--color-border)] hover:text-[var(--color-ink)]',
+        ].join(' '),
+        ghost: [
+          'text-[var(--color-faint)]',
+          'hover:bg-[var(--color-hover-bg)] hover:text-[var(--color-ink)]',
+        ].join(' '),
       },
       size: {
         default: 'h-9 px-3',

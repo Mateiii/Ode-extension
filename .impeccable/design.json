@@ -1,0 +1,237 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-07T00:00:00Z",
+  "title": "Design System: Øde",
+  "extensions": {
+    "colorMeta": {
+      "ochre": {
+        "role": "primary",
+        "displayName": "Ochre",
+        "canonical": "oklch(0.51 0.11 89)",
+        "tonalRamp": [
+          "oklch(0.15 0.06 89)",
+          "oklch(0.25 0.09 89)",
+          "oklch(0.35 0.10 89)",
+          "oklch(0.44 0.10 89)",
+          "oklch(0.51 0.11 89)",
+          "oklch(0.63 0.11 89)",
+          "oklch(0.75 0.10 89)",
+          "oklch(0.90 0.04 89)",
+          "oklch(0.960 0.025 91)"
+        ]
+      },
+      "ochre-hover": {
+        "role": "primary-hover",
+        "displayName": "Ochre Hover",
+        "canonical": "oklch(0.44 0.10 89)",
+        "tonalRamp": []
+      },
+      "ochre-tint": {
+        "role": "primary-tint",
+        "displayName": "Ochre Tint",
+        "canonical": "oklch(0.960 0.025 91)",
+        "tonalRamp": []
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(0.151 0.022 247)",
+        "tonalRamp": [
+          "oklch(0.151 0.022 247)",
+          "oklch(0.25 0.018 247)",
+          "oklch(0.35 0.016 247)",
+          "oklch(0.491 0.014 248)",
+          "oklch(0.555 0.018 248)",
+          "oklch(0.710 0.020 248)",
+          "oklch(0.835 0.015 248)",
+          "oklch(0.905 0.009 248)",
+          "oklch(0.975 0.004 91)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "canonical": "oklch(0.975 0.004 91)",
+        "tonalRamp": []
+      },
+      "white": {
+        "role": "neutral",
+        "displayName": "White",
+        "canonical": "oklch(1.000 0.000 0)",
+        "tonalRamp": []
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "canonical": "oklch(0.491 0.014 248)",
+        "tonalRamp": []
+      },
+      "faint": {
+        "role": "neutral",
+        "displayName": "Faint",
+        "canonical": "oklch(0.555 0.018 248)",
+        "tonalRamp": []
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Border",
+        "canonical": "oklch(0.905 0.009 248)",
+        "tonalRamp": []
+      },
+      "border-light": {
+        "role": "neutral",
+        "displayName": "Border Light",
+        "canonical": "oklch(0.835 0.015 248)",
+        "tonalRamp": []
+      },
+      "hover-bg": {
+        "role": "neutral",
+        "displayName": "Hover Background",
+        "canonical": "oklch(0.954 0.006 248)",
+        "tonalRamp": []
+      },
+      "link": {
+        "role": "secondary",
+        "displayName": "Link Steel",
+        "canonical": "oklch(0.474 0.138 249)",
+        "tonalRamp": []
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Danger Red",
+        "canonical": "oklch(0.437 0.148 29)",
+        "tonalRamp": []
+      }
+    },
+    "typographyMeta": {
+      "title":    { "displayName": "Title",    "purpose": "Panel heading 'Øde' and top-level tab titles. One per screen." },
+      "headline": { "displayName": "Headline", "purpose": "Modal headers, major section heads within a view." },
+      "body":     { "displayName": "Body",     "purpose": "Note content, chat messages, citation text — all readable prose." },
+      "label":    { "displayName": "Label",    "purpose": "Button labels, tab nav, folder chip names, note type badges." },
+      "micro":    { "displayName": "Micro",    "purpose": "Timestamps, source URLs, metadata. Secondary reads only." }
+    },
+    "shadows": [
+      {
+        "name": "modal-lift",
+        "value": "0 20px 50px rgba(15, 23, 42, 0.30)",
+        "purpose": "Full modal overlays. Conveys: this layer is above everything."
+      },
+      {
+        "name": "toast-rise",
+        "value": "0 12px 30px rgba(15, 23, 42, 0.28)",
+        "purpose": "Fixed-position toast notifications. Conveys: ephemeral, above the panel."
+      },
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 3px rgba(51, 65, 85, 0.12)",
+        "purpose": "Input and textarea keyboard focus state."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-state",
+        "value": "120ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Default state-change transitions: button hover, input focus, chip active."
+      },
+      {
+        "name": "ease-expand",
+        "value": "160ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Slightly longer for expanding/collapsing elements: note collapse, context box toggle."
+      },
+      {
+        "name": "ease-reveal",
+        "value": "200ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Content reveals: new message arrival, toast fade-in."
+      }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Ochre-filled CTA. Used for primary actions: 'Save note', 'Send', 'Create folder'. One per screen at most.",
+      "html": "<button class=\"ds-btn-primary\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z\"/><polyline points=\"17 21 17 13 7 13 7 21\"/><polyline points=\"7 3 7 8 15 8\"/></svg>Save note</button>",
+      "css": ".ds-btn-primary { align-items: center; background: oklch(0.51 0.11 89); border: 1px solid oklch(0.51 0.11 89); border-radius: 8px; color: oklch(1.000 0.000 0); cursor: pointer; display: inline-flex; font-family: Inter, ui-sans-serif, sans-serif; font-size: 13px; font-weight: 700; gap: 6px; line-height: 1; min-height: 36px; padding: 0 14px; transition: background 120ms cubic-bezier(0.16, 1, 0.3, 1), border-color 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-primary:hover { background: oklch(0.44 0.10 89); border-color: oklch(0.44 0.10 89); } .ds-btn-primary:focus-visible { outline: 2px solid oklch(0.51 0.11 89); outline-offset: 2px; } .ds-btn-primary:disabled { cursor: not-allowed; opacity: 0.55; } @media (prefers-reduced-motion: reduce) { .ds-btn-primary { transition: none; } }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "White-filled button with border. Used for secondary actions and cancel flows.",
+      "html": "<button class=\"ds-btn-secondary\">Cancel</button>",
+      "css": ".ds-btn-secondary { align-items: center; background: oklch(1.000 0.000 0); border: 1px solid oklch(0.835 0.015 248); border-radius: 8px; color: oklch(0.491 0.014 248); cursor: pointer; display: inline-flex; font-family: Inter, ui-sans-serif, sans-serif; font-size: 13px; font-weight: 600; gap: 6px; line-height: 1; min-height: 36px; padding: 0 14px; transition: background 120ms cubic-bezier(0.16, 1, 0.3, 1), border-color 120ms cubic-bezier(0.16, 1, 0.3, 1), color 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-secondary:hover { background: oklch(0.954 0.006 248); border-color: oklch(0.905 0.009 248); color: oklch(0.151 0.022 247); } .ds-btn-secondary:focus-visible { outline: 2px solid oklch(0.51 0.11 89); outline-offset: 2px; } .ds-btn-secondary:disabled { cursor: not-allowed; opacity: 0.55; } @media (prefers-reduced-motion: reduce) { .ds-btn-secondary { transition: none; } }"
+    },
+    {
+      "name": "Folder Chip",
+      "kind": "chip",
+      "refersTo": "folder-chip",
+      "description": "Pill-shaped tab for folder navigation. Default and active variants. Active is the only chip that uses ochre.",
+      "html": "<div style=\"display:flex;gap:6px;\"><button class=\"ds-chip\">General</button><button class=\"ds-chip ds-chip--active\">Sources</button></div>",
+      "css": ".ds-chip { align-items: center; background: oklch(1.000 0.000 0); border: 1px solid oklch(0.835 0.015 248); border-radius: 999px; color: oklch(0.491 0.014 248); cursor: pointer; display: inline-flex; font-family: Inter, ui-sans-serif, sans-serif; font-size: 12px; font-weight: 700; gap: 6px; min-height: 30px; padding: 0 12px; transition: background 120ms cubic-bezier(0.16, 1, 0.3, 1), border-color 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-chip:hover { background: oklch(0.954 0.006 248); border-color: oklch(0.905 0.009 248); } .ds-chip--active { background: oklch(0.960 0.025 91); border-color: oklch(0.51 0.11 89 / 0.35); color: oklch(0.44 0.10 89); } .ds-chip:focus-visible { outline: 2px solid oklch(0.51 0.11 89); outline-offset: 2px; } @media (prefers-reduced-motion: reduce) { .ds-chip { transition: none; } }"
+    },
+    {
+      "name": "Note Card",
+      "kind": "card",
+      "refersTo": "note-card",
+      "description": "Container for a saved research note. Two-column grid: reorder strip + content. Flat at rest.",
+      "html": "<article class=\"ds-note\"><header class=\"ds-note-header\"><strong class=\"ds-note-title\">The annotated margin as design doctrine</strong><span class=\"ds-note-meta\">Selection note &middot; Jun 7, 14:23</span></header><p class=\"ds-note-body\">Every mark on the page must earn its place. Decoration is the absence of thought.</p></article>",
+      "css": ".ds-note { background: oklch(1.000 0.000 0); border: 1px solid oklch(0.905 0.009 248); border-radius: 8px; display: grid; gap: 8px; padding: 12px; } .ds-note-header { display: flex; flex-direction: column; gap: 3px; } .ds-note-title { color: oklch(0.151 0.022 247); font-family: Inter, ui-sans-serif, sans-serif; font-size: 13px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; } .ds-note-meta { color: oklch(0.555 0.018 248); font-family: Inter, ui-sans-serif, sans-serif; font-size: 11px; font-weight: 600; line-height: 1.3; } .ds-note-body { color: oklch(0.151 0.022 247); font-family: Inter, ui-sans-serif, sans-serif; font-size: 13px; font-weight: 400; line-height: 1.45; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }"
+    },
+    {
+      "name": "Chat Message (Assistant)",
+      "kind": "card",
+      "refersTo": "note-card",
+      "description": "Øde's response in the chat area. White card, left-aligned. Shows 'Save to notes' footer on completion.",
+      "html": "<article class=\"ds-message ds-message--assistant\"><span class=\"ds-message-sender\">Øde</span><p class=\"ds-message-body\">The annotated margin is a deliberate design choice: each element on screen must justify its presence as a considered mark, not a default template value.</p><div class=\"ds-message-save\"><button class=\"ds-save-btn\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z\"/><line x1=\"12\" y1=\"7\" x2=\"12\" y2=\"13\"/><line x1=\"9\" y1=\"10\" x2=\"15\" y2=\"10\"/></svg>Save to notes</button></div></article>",
+      "css": ".ds-message { border: 1px solid oklch(0.905 0.009 248); border-radius: 8px; max-width: 92%; min-width: 0; padding: 10px 12px; word-break: break-word; } .ds-message--assistant { align-self: flex-start; background: oklch(1.000 0.000 0); } .ds-message-sender { color: oklch(0.555 0.018 248); display: block; font-family: Inter, ui-sans-serif, sans-serif; font-size: 12px; font-weight: 700; margin-bottom: 4px; } .ds-message-body { color: oklch(0.151 0.022 247); font-family: Inter, ui-sans-serif, sans-serif; font-size: 14px; line-height: 1.45; margin: 0; overflow-wrap: anywhere; } .ds-message-save { border-top: 1px solid oklch(0.905 0.009 248); margin-top: 8px; padding-top: 6px; } .ds-save-btn { align-items: center; background: none; border: none; border-radius: 5px; color: oklch(0.555 0.018 248); cursor: pointer; display: inline-flex; font-family: Inter, ui-sans-serif, sans-serif; font-size: 12px; font-weight: 500; gap: 4px; line-height: 1; padding: 3px 6px; transition: background 120ms cubic-bezier(0.16, 1, 0.3, 1), color 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-save-btn:hover { background: oklch(0.954 0.006 248); color: oklch(0.151 0.022 247); } @media (prefers-reduced-motion: reduce) { .ds-save-btn { transition: none; } }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Standard text input and textarea. 8px radius, ink border on focus.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Ask about this page...\" />",
+      "css": ".ds-input { background: oklch(1.000 0.000 0); border: 1px solid oklch(0.835 0.015 248); border-radius: 8px; color: oklch(0.151 0.022 247); font-family: Inter, ui-sans-serif, sans-serif; font-size: 13px; line-height: 1.45; min-height: 34px; outline: none; padding: 0 10px; transition: border-color 120ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 120ms cubic-bezier(0.16, 1, 0.3, 1); width: 100%; } .ds-input::placeholder { color: oklch(0.555 0.018 248); } .ds-input:focus { border-color: oklch(0.151 0.022 247); box-shadow: 0 0 0 3px rgba(51, 65, 85, 0.12); } .ds-input:disabled { cursor: not-allowed; opacity: 0.50; } @media (prefers-reduced-motion: reduce) { .ds-input { transition: none; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Annotated Margin",
+    "overview": "Øde is the layer of precision that sits alongside original research. Every element in this system asks: is this the mark of someone who read carefully, or someone who decorated a template? The answer is always the former. Surfaces are spare. Type does the structural work. The ochre accent appears like a pencil underlining — rare, intentional, exact.\n\nThe palette is built around the principle that warmth belongs to the accent, not the background. Crisp white pages carry the content; deep ochre (the pigment-name hue, not a tech-brand orange) marks what matters. The neutral ramp leans cool — a slate family with faint blue undertones — so the ochre reads as a considered mark against an academic field, not a product accent against a warm-neutral SaaS canvas.\n\nThis system explicitly rejects: the white-bubble-on-dark-sidebar AI chat aesthetic (ChatGPT, Perplexity), the warm-cream-with-rounded-everything SaaS register (Notion-adjacent products), and the 'browser extension grey' starting point — the current state before this system was established.",
+    "keyCharacteristics": [
+      "Flat surfaces at rest; tonal separation between surface and white creates depth without shadows",
+      "Single accent color used at ≤10% surface area: ochre for primary actions and active states",
+      "Inter alone, tuned through weight and size — five tracked roles, no display/body split",
+      "8px radius throughout; gently curved but not soft",
+      "Transitions at 120–160ms ease-out; state changes only, no choreography"
+    ],
+    "rules": [
+      { "name": "The One Ochre Rule", "body": "Ochre appears once per screen in a meaningful way: the primary action, or the active selection state. Never both on the same screen at full saturation.", "section": "colors" },
+      { "name": "The No-Tinted-Background Rule", "body": "Surface exists; it is the only background that carries any hue. Body backgrounds, modal overlays, and panel containers do not use cream, beige, warm white, or cool blue.", "section": "colors" },
+      { "name": "The Single Family Rule", "body": "Inter is the only typeface. Adding a display face, a serif for headings, or a mono for labels is forbidden.", "section": "typography" },
+      { "name": "The Weight Rule", "body": "Labels are 700; body is 400. Never use 600 as the sole differentiator between a label and body text at the same size.", "section": "typography" },
+      { "name": "The Flat-by-Default Rule", "body": "Cards, note items, messages, and folder chips have no ambient shadow at rest. Introducing a hover shadow on note cards or chat messages is prohibited.", "section": "elevation" },
+      { "name": "The Modal-Last Rule", "body": "Modals are used only for irreversible multi-step confirmations. Single-step confirmations and folder/project creation use inline forms.", "section": "components" }
+    ],
+    "dos": [
+      "Do use ochre exclusively for the single most important interactive signal on any given screen",
+      "Do keep white as the card background in every view — notes, messages, modals, inputs are always white",
+      "Do use tonal separation (surface panel + white card) as the primary depth affordance",
+      "Do use focus-visible focus rings (2px solid ochre, 2px offset) on every interactive element",
+      "Do put white text on any ochre fill",
+      "Do keep transitions at 120–160ms ease-out, state changes only",
+      "Do use danger red for destructive actions with white text"
+    ],
+    "donts": [
+      "Don't use a left-border stripe (border-left > 1px with a brand color) as a state indicator",
+      "Don't introduce a cream, sand, parchment, or warm-neutral body background",
+      "Don't add a second typeface",
+      "Don't use the dark-sidebar / white-bubble chat layout — this is the ChatGPT/Perplexity anti-reference",
+      "Don't add ambient hover shadows to note cards, message bubbles, or list items",
+      "Don't use ochre as body text on a white background — contrast is only ≈3.7:1",
+      "Don't render ghost/secondary buttons with transparent borders on a white card background",
+      "Don't use generic button copy: 'OK', 'Yes', 'Cancel'. Always verb + object"
+    ]
+  }
+}
