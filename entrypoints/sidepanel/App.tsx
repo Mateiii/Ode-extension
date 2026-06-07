@@ -19,6 +19,7 @@ import {
   Send,
   Settings,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -54,6 +55,7 @@ import {
 import { formatBibtexBundle } from '@/lib/bibtex';
 import { streamPageChat } from '@/lib/pageChat';
 import { clearPendingSidepanelAction, getPendingSidepanelAction } from '@/lib/sidepanelQueue';
+import { extractFileText, extractTextFromPdfUrl } from '@/lib/fileParsers';
 
 type ChatMessage = {
   id: string;
@@ -256,6 +258,25 @@ const QUICK_ACTIONS = [
   },
 ] as const;
 
+function isPdfUrl(url: string): boolean {
+  // Only handle http/https — file:// URLs can't be fetch()ed from extension pages.
+  if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
+  try {
+    return new URL(url).pathname.toLowerCase().endsWith('.pdf');
+  } catch {
+    return false;
+  }
+}
+
+function pdfFilenameFromUrl(url: string): string {
+  try {
+    const parts = new URL(url).pathname.split('/');
+    return parts[parts.length - 1] || 'document.pdf';
+  } catch {
+    return 'document.pdf';
+  }
+}
+
 function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [context, setContext] = useState<SelectionContextMessage | null>(null);
@@ -285,6 +306,12 @@ function App() {
   const [newNoteText, setNewNoteText] = useState('');
   const [scrollToNoteId, setScrollToNoteId] = useState<string | null>(null);
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [fileText, setFileText] = useState<string | null>(null);
+  const [fileSourceName, setFileSourceName] = useState<string | null>(null);
+  const [isFileLoading, setIsFileLoading] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileSourceIsAutoRef = useRef(false);
   const handledActionKeysRef = useRef<Set<string>>(new Set());
   const toastTimerRef = useRef<number | undefined>(undefined);
   const selectedFolderIdRef = useRef(selectedFolderId);
@@ -294,6 +321,79 @@ function App() {
   useEffect(() => {
     selectedFolderIdRef.current = selectedFolderId;
   }, [selectedFolderId]);
+
+  // Auto-ingest web-hosted PDFs when the active tab is a PDF URL.
+  useEffect(() => {
+    let lastIngestedUrl = '';
+
+    const tryIngestTab = async (url: string | undefined) => {
+      if (!url || !isPdfUrl(url)) {
+        // Navigated away from a PDF — only clear if the source was auto-loaded.
+        if (fileSourceIsAutoRef.current) {
+          setFileText(null);
+          setFileSourceName(null);
+          fileSourceIsAutoRef.current = false;
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+        return;
+      }
+
+      // Skip if already loaded this exact URL.
+      if (url === lastIngestedUrl) return;
+      lastIngestedUrl = url;
+
+      fileSourceIsAutoRef.current = true;
+      setIsFileLoading(true);
+      const filename = pdfFilenameFromUrl(url);
+
+      try {
+        const text = await extractTextFromPdfUrl(url);
+        setFileText(text);
+        setFileSourceName(filename);
+        setToast(`Auto-loaded: ${filename}`);
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = window.setTimeout(() => setToast(''), 3000);
+      } catch {
+        setToast('Could not extract PDF from this tab.');
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = window.setTimeout(() => setToast(''), 3000);
+        lastIngestedUrl = ''; // allow retry on next activation
+        fileSourceIsAutoRef.current = false;
+      } finally {
+        setIsFileLoading(false);
+      }
+    };
+
+    // Check current tab on mount.
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      void tryIngestTab(tabs[0]?.url);
+    });
+
+    // Fired when the user switches tabs.
+    const onActivated = ({ tabId }: { tabId: number; windowId: number }) => {
+      chrome.tabs.get(tabId, (tab) => {
+        void tryIngestTab(tab.url);
+      });
+    };
+    chrome.tabs.onActivated.addListener(onActivated);
+
+    // Fired when the active tab navigates to a new URL.
+    const onUpdated = (
+      _tabId: number,
+      changeInfo: { status?: string; url?: string },
+      tab: { active?: boolean; url?: string },
+    ) => {
+      if (tab.active && changeInfo.status === 'complete') {
+        void tryIngestTab(tab.url);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    return () => {
+      chrome.tabs.onActivated.removeListener(onActivated);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const showToast = (text: string) => {
     setToast(text);
@@ -715,21 +815,22 @@ function App() {
     chatAbortRef.current = controller;
 
     try {
-      // Ask the background service worker for the page text.
-      // The background uses its proven requestPageText() path (same as "Take page notes").
-      const pageText = await new Promise<string>((resolve) => {
-        chrome.runtime.sendMessage({ type: 'request-page-text' }, (response) => {
-          void chrome.runtime.lastError;
-          const text =
-            typeof response === 'object' &&
-            response !== null &&
-            'text' in response &&
-            typeof (response as { text: unknown }).text === 'string'
-              ? (response as { text: string }).text
-              : '';
-          resolve(text);
-        });
-      });
+      // When a file is loaded, use its extracted text; otherwise ask the background.
+      const pageText = fileText !== null
+        ? fileText
+        : await new Promise<string>((resolve) => {
+            chrome.runtime.sendMessage({ type: 'request-page-text' }, (response) => {
+              void chrome.runtime.lastError;
+              const text =
+                typeof response === 'object' &&
+                response !== null &&
+                'text' in response &&
+                typeof (response as { text: unknown }).text === 'string'
+                  ? (response as { text: string }).text
+                  : '';
+              resolve(text);
+            });
+          });
 
       // Build conversational memory: prior real turns + this new user message,
       // mapped to OpenAI {role, content} shape, capped at the last 6 turns.
@@ -1064,6 +1165,30 @@ function App() {
     void swapQuickNotes(note.id, swapWith.id);
   };
 
+  const handleFileUpload = async (file: File) => {
+    fileSourceIsAutoRef.current = false;
+    setIsFileLoading(true);
+    try {
+      const text = await extractFileText(file);
+      setFileText(text);
+      setFileSourceName(file.name);
+      setActiveTab('chat');
+      showToast(`Loaded: ${file.name}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not read file.';
+      showToast(msg);
+    } finally {
+      setIsFileLoading(false);
+    }
+  };
+
+  const clearFileSource = () => {
+    setFileText(null);
+    setFileSourceName(null);
+    fileSourceIsAutoRef.current = false;
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const saveCitationAsNote = async (label: string, value: string) => {
     const sourcesFolder = projectFolders.find((f) => f.id === activeProject?.sourcesFolderId);
     const targetFolderId = sourcesFolder?.id ?? selectedFolderIdRef.current ?? DEFAULT_FOLDER_ID;
@@ -1177,6 +1302,20 @@ function App() {
 
       {activeTab === 'chat' ? (
         <section ref={scrollRef} className="chat-area" aria-label="Research chat">
+          {fileSourceName ? (
+            <div className="file-source-banner">
+              <FileText aria-hidden="true" size={14} />
+              <span>Active file: <strong>{fileSourceName}</strong></span>
+              <button
+                aria-label="Clear file source"
+                className="file-source-dismiss"
+                onClick={clearFileSource}
+                type="button"
+              >
+                <X aria-hidden="true" size={13} />
+              </button>
+            </div>
+          ) : null}
           {messages.map((message) => (
             <article className={`message ${message.role}`} key={message.id}>
               <span>{message.role === 'assistant' ? 'Øde' : 'You'}</span>
@@ -1631,19 +1770,52 @@ function App() {
 
       <div className="input-section">
         {activeTab === 'chat' ? (
-          <div className="chat-chips" aria-label="Quick actions" role="toolbar">
-            {QUICK_ACTIONS.map(({ label, prompt }) => (
-              <button
-                className="chat-chip"
-                disabled={isChatLoading}
-                key={label}
-                onClick={() => { void sendChatMessage(prompt); }}
-                type="button"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="chat-chips" aria-label="Quick actions" role="toolbar">
+              {QUICK_ACTIONS.map(({ label, prompt }) => (
+                <button
+                  className="chat-chip"
+                  disabled={isChatLoading}
+                  key={label}
+                  onClick={() => { void sendChatMessage(prompt); }}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div
+              className={`file-dropzone ${isDragOver ? 'file-dropzone--over' : ''} ${isFileLoading ? 'file-dropzone--loading' : ''}`}
+              onDragLeave={() => setIsDragOver(false)}
+              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragOver(false);
+                const file = e.dataTransfer.files[0];
+                if (file) void handleFileUpload(file);
+              }}
+              onClick={() => fileInputRef.current?.click()}
+              role="button"
+              tabIndex={0}
+              aria-label="Upload a document to use as chat context"
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
+            >
+              <Upload aria-hidden="true" size={14} />
+              <span>{isFileLoading ? 'Reading file…' : 'Drop or click to load PDF, DOCX, PPTX'}</span>
+              <input
+                accept=".pdf,.docx,.pptx"
+                aria-hidden="true"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void handleFileUpload(file);
+                }}
+                ref={fileInputRef}
+                style={{ display: 'none' }}
+                tabIndex={-1}
+                type="file"
+              />
+            </div>
+          </>
         ) : null}
         <form className="input-bar" onSubmit={handleSubmit}>
           <Textarea
