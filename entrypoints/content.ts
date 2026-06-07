@@ -3,6 +3,21 @@ import { scrapePageMetadata } from '@/lib/pageMetadata';
 export default defineContentScript({
   matches: ['http://*/*', 'https://*/*'],
   main() {
+    // Guard: abort on non-HTML documents (XML feeds, S3 error pages, JSON APIs,
+    // plain-text responses). These have no <body> to inject into and no user
+    // selections we care about. Without this check, the toolbar's text nodes
+    // pollute the raw document tree and corrupt clipboard copies.
+    const contentType = document.contentType?.toLowerCase() ?? '';
+    const rootTag = document.documentElement?.nodeName ?? '';
+    if (
+      rootTag !== 'HTML' ||                   // XML / SVG / S3 error root ≠ "HTML"
+      contentType.includes('xml') ||          // text/xml, application/xml, image/svg+xml
+      contentType.includes('json') ||         // application/json
+      contentType.includes('text/plain')      // raw .txt responses
+    ) {
+      return;
+    }
+
     const bar = document.createElement('div');
     const shadow = bar.attachShadow({ mode: 'open' });
     let selectedText = '';

@@ -5,12 +5,14 @@
 Ode is a Chromium MV3 research assistant extension built with WXT + React. It has:
 
 - content script selection toolbar: Ask AI, Fact Check, Save to Notes, Cite
-- Chrome side panel UI with Chat / Notes / Source tabs
+- Chrome side panel UI with Chat / Notes / Source / Account tabs
 - **page-context AI chat**: streaming answers grounded in the active tab's text (or an uploaded document), with conversation memory and click-to-jump source citations
 - **document ingest**: drag-and-drop or click-to-upload PDF / DOCX / PPTX in the Chat tab; auto-fetches web-hosted PDFs when the active tab URL ends in `.pdf`
 - **context menu actions**: right-click on any selection (including inside Chrome's native PDF viewer) → Save to Øde Notes / Fact Check with Øde / Cite with Øde
 - background service worker for privileged actions, storage, Tavily/OpenAI calls, and active-tab page capture
 - local `chrome.storage.local` persistence for projects, folders, notes, and pending sidepanel actions
+- **Supabase auth + cloud sync**: premium users get notes/citations mirrored to Supabase in real time
+- **Stripe payments**: hosted Payment Link flow upgrades a user to premium; local webhook server flips the `is_premium` flag in Supabase
 
 ## Setup
 
@@ -21,25 +23,41 @@ npm run build     # production build
 npm run compile   # tsc type-check only (no emit)
 ```
 
-Env vars go in `.env` at repo root (used by fact-check, page notes, and AI chat):
+Env vars go in `.env` at repo root. **All `WXT_*` vars are baked into the extension bundle at build time; the others are server-side only.**
 
 ```bash
+# AI features
 WXT_TAVILY_API_KEY=...
 WXT_OPENAI_API_KEY=...
-WXT_OPENAI_MODEL=gpt-4o-mini   # optional; all OpenAI calls default to gpt-4o-mini
+WXT_OPENAI_MODEL=gpt-4o-mini        # optional; defaults to gpt-4o-mini
+
+# Supabase (anon key is safe to bundle; service role key is server-side only)
+WXT_SUPABASE_URL=https://your-project.supabase.co
+WXT_SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...       # webhook server only — never in the bundle
+
+# Stripe
+WXT_STRIPE_PAYMENT_LINK=https://buy.stripe.com/test_...   # baked into bundle
+STRIPE_SECRET_KEY=sk_test_...                              # webhook server only
+STRIPE_WEBHOOK_SECRET=whsec_...                            # webhook server only
 ```
 
-`.env` is gitignored. `WXT_OPENAI_API_KEY` is read via `import.meta.env` and baked into the build bundle.
+`.env` is gitignored.
 
 ## Key Files
 
 | File | Purpose |
 |---|---|
-| `entrypoints/content.ts` | Injects the highlight toolbar; extracts page text for page-note capture |
+| `entrypoints/content.ts` | Injects the highlight toolbar; extracts page text for page-note capture; **guards against non-HTML documents** |
 | `entrypoints/background.ts` | Routes selection actions, opens side panel, runs fact checks, captures page notes, formats citation text, serves `request-page-text` for chat |
-| `entrypoints/sidepanel/App.tsx` | Main React side panel — all UI: chat, notes, folders, Source tab, projects |
+| `entrypoints/sidepanel/App.tsx` | Main React side panel — all UI: chat, notes, folders, Source tab, projects, account tab; auth state; `saveNoteWithSync` |
+| `entrypoints/sidepanel/AccountPanel.tsx` | Sign-in / sign-up / user card / upgrade CTA panel |
+| `entrypoints/sidepanel/SettingsPanel.tsx` | Settings panel (theme, citation style, layout, cloud sync toggle) |
 | `entrypoints/sidepanel/style.css` | Side panel styles |
 | `lib/researchStorage.ts` | All storage helpers; canonical `QuickNote` / `NoteFolder` / `Project` types; `getNoteTitle`, `resolveNoteTitle`, `formatCitation` |
+| `lib/supabase.ts` | Supabase client; `signInWithEmail`, `signUpWithEmail`, `signOut`, `getIsPremiumUser`, `SupabaseUser` type |
+| `lib/cloudSync.ts` | `syncNoteToCloud(note, userId)` — upserts to `notes` table; also `citations` for `kind === 'citation'` |
+| `lib/stripe.ts` | `openStripeCheckout(userId, email)` — opens Payment Link in new tab; `IS_STRIPE_CONFIGURED` build-time flag |
 | `lib/pageChat.ts` | AI chat: streaming OpenAI Chat Completions (SSE), system-prompt assembly, `ChatTurn` history type |
 | `lib/bibtex.ts` | BibTeX formatting — `formatBibtex(note)`, `formatBibtexBundle(notes[])` |
 | `lib/factCheck.ts` | Tavily search + OpenAI analysis + fallback fact-check |
@@ -47,7 +65,9 @@ WXT_OPENAI_MODEL=gpt-4o-mini   # optional; all OpenAI calls default to gpt-4o-mi
 | `lib/pageMetadata.ts` | Page metadata scraping — title, author, canonical URL, date, site name |
 | `lib/fileParsers.ts` | Document text extraction: `extractPdfText` (unpdf), `extractDocxText` (mammoth), `extractPptxText` (jszip), `extractFileText` dispatcher, `extractTextFromPdfUrl` fetch helper |
 | `lib/sidepanelQueue.ts` | Pending-action handoff for cold-opening the side panel |
-| `types/chrome.d.ts` | Local Chrome API typings (incl. `executeScript` `args`, `sendMessage` response callback, `tabs.onActivated/onUpdated`, `contextMenus`) |
+| `lib/useSettings.ts` | `useSettings` hook — reads/writes `AppSettings` (theme, citation style, storage mode, panel alignment) from `chrome.storage.local` |
+| `scripts/stripe-webhook-server.mjs` | Local Node server — receives Stripe webhook events and upgrades Supabase users to premium |
+| `types/chrome.d.ts` | Local Chrome API typings (incl. `tabs.create`, `executeScript` args, `sendMessage` response callback, `tabs.onActivated/onUpdated`, `contextMenus`) |
 
 ---
 
@@ -169,14 +189,183 @@ All UI uses the scoped variables above — **never** raw `folders` / `notes`.
 
 | Action | Background role | App.tsx role |
 |---|---|---|
-| `save-note` | `openAndAnnounce()` — opens panel, sends message | Saves note to `selectedFolderIdRef.current` |
-| `extract-citation` | Formats APA/MLA, sends `citationText` in message | Saves citation note to selected folder |
+| `save-note` | `openAndAnnounce()` — opens panel, sends message | Saves note via `saveNoteWithSync` to `selectedFolderIdRef.current` |
+| `extract-citation` | Formats APA/MLA, sends `citationText` in message | Saves citation note via `saveNoteWithSync` to selected folder |
 | `fact-check` | Runs `factCheckClaim`, sends result message | Renders result in chat |
 | `ask-ai` | `openAndAnnounce()` — opens panel, sends message | Switches to Chat tab, pre-fills input with selection as block-quote, focuses textarea |
 
 `clearPendingSidepanelAction()` is called after `handleSelectionAction` in the live `onMessage` listener to prevent stale loading states on panel refresh.
 
 The same four actions are also available via the **context menu** (see Context Menu section below). Context menu messages are structurally identical to toolbar messages so `handleSelectionAction` processes both without distinguishing the source.
+
+---
+
+## Supabase Auth & Cloud Sync
+
+### Client (`lib/supabase.ts`)
+
+```ts
+export const supabase = createClient(WXT_SUPABASE_URL, WXT_SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+});
+```
+
+Uses the browser's `localStorage` for session persistence (available in the sidepanel; **not** in service workers — do not import from `background.ts`).
+
+Exports:
+- `signInWithEmail(email, password)` → `{ error: string | null }`
+- `signUpWithEmail(email, password)` → `{ error: string | null }` — Supabase sends a confirmation email; user is not active until they click it
+- `signOut()`
+- `getIsPremiumUser()` — reads `session.user.user_metadata.is_premium`
+- `SupabaseUser` type
+
+### Auth state in App.tsx
+
+```ts
+const [authUser, setAuthUser] = useState<SupabaseUser | null>(null);
+const [isPremiumUser, setIsPremiumUser] = useState(false);
+```
+
+Initialised on mount via `supabase.auth.getSession()`, kept live via `supabase.auth.onAuthStateChange()`. Two refs mirror the state for use inside `[]`-dep effects:
+
+```ts
+const isPremiumUserRef = useRef(false);   // updated in useEffect([isPremiumUser])
+const authUserIdRef   = useRef<string | null>(null); // updated in useEffect([authUser])
+```
+
+### Save middleware (`saveNoteWithSync`)
+
+Every note-save path calls `saveNoteWithSync` instead of `saveQuickNote` directly:
+
+```ts
+const saveNoteWithSync = useCallback(async (input) => {
+  const note = await saveQuickNote(input);           // local first — always works offline
+  if (isPremiumUserRef.current && authUserIdRef.current) {
+    void syncNoteToCloud(note, authUserIdRef.current).catch(() => {});  // fire-and-forget
+  }
+  return note;
+}, []);
+```
+
+`saveEditNote` also syncs edits after `updateQuickNote`.
+
+### Cloud sync (`lib/cloudSync.ts`)
+
+```ts
+export async function syncNoteToCloud(note: QuickNote, userId: string): Promise<void> {
+  await supabase.from('notes').upsert({ ...note, user_id: userId });
+  if (note.kind === 'citation') {
+    await supabase.from('citations').upsert({ ...note, user_id: userId });
+  }
+}
+```
+
+### Supabase tables required
+
+| Table | Columns |
+|---|---|
+| `notes` | All `QuickNote` fields + `user_id uuid` |
+| `citations` | Same shape — citation-kind notes are dual-written |
+
+Set `is_premium: true` in a user's `user_metadata` via the Supabase dashboard (Authentication → Users → Edit) to grant premium access.
+
+### Premium folder gate
+
+`handleCreateFolder` in App.tsx blocks non-premium users who already have ≥ 1 custom folder (beyond the two system folders — General and Sources) and shows the `showPremiumUpsell` modal instead. The modal's "See plans →" CTA navigates to the `account` tab.
+
+---
+
+## Stripe Payments
+
+### Extension side (`lib/stripe.ts`)
+
+```ts
+export const IS_STRIPE_CONFIGURED: boolean   // false when env var is missing or is a placeholder
+export function openStripeCheckout(userId: string, email?: string): boolean
+```
+
+`openStripeCheckout` appends `?client_reference_id=<userId>&prefilled_email=<email>` to the Payment Link URL and calls `chrome.tabs.create`. Returns `false` (and logs a setup guide) if `IS_STRIPE_CONFIGURED` is false — **no tab is opened**. App.tsx shows a toast in that case.
+
+`AccountPanel` imports `IS_STRIPE_CONFIGURED` directly and renders the upgrade button as disabled with label "Payments not configured" when it's false.
+
+### Local webhook server (`scripts/stripe-webhook-server.mjs`)
+
+Receives Stripe events and upgrades the Supabase user to premium. Handles `checkout.session.completed` only; extend `EVENT_HANDLERS` for renewals / cancellations.
+
+```
+checkout.session.completed
+  → reads client_reference_id (= Supabase user ID)
+  → supabase.auth.admin.updateUserById(userId, { user_metadata: { is_premium: true } })
+```
+
+Uses the **service-role key** (not the anon key) for the Supabase admin API.
+
+### Local dev workflow
+
+```bash
+# Terminal 1
+npm run dev                 # extension hot-reload
+
+# Terminal 2
+npm run stripe:server       # starts webhook server on :4242
+
+# Terminal 3
+npm run stripe:listen       # Stripe CLI → forwards test events to :4242
+                            # copy the whsec_… it prints → STRIPE_WEBHOOK_SECRET in .env
+```
+
+### One-time Stripe setup
+
+1. Create a product in the Stripe dashboard → **Products → Payment Links** → copy the URL
+2. Add to `.env`: `WXT_STRIPE_PAYMENT_LINK=https://buy.stripe.com/test_...`
+3. `npm run dev` to rebuild — `IS_STRIPE_CONFIGURED` becomes `true` and the button activates
+4. Test with card `4242 4242 4242 4242`, any future expiry, any CVC
+
+---
+
+## Account Tab
+
+`ActiveTab` value: `'account'`. Toggled via a `LogIn` icon button in the panel header (alongside the Settings gear), both wrapped in `.panel-header-actions`.
+
+`AccountPanel` (`entrypoints/sidepanel/AccountPanel.tsx`) has three views:
+
+| State | Renders |
+|---|---|
+| Not logged in | Sign-in / Sign-up tab toggle + form |
+| Post sign-up | Confirmation screen ("Check your inbox") with back link |
+| Logged in | User card (email + plan badge) + upgrade upsell card (free) or sync-active indicator (premium) + sign-out button |
+
+Sign-up includes a **confirm password** field with client-side mismatch and minimum-length validation before hitting Supabase.
+
+The input section and chat bar are hidden when `activeTab === 'account'` (same as `'settings'`).
+
+---
+
+## Selection Toolbar (content.ts)
+
+### Non-HTML document guard
+
+Added at the very top of `main()`, before any DOM mutation:
+
+```ts
+const contentType = document.contentType?.toLowerCase() ?? '';
+const rootTag = document.documentElement?.nodeName ?? '';
+if (
+  rootTag !== 'HTML' ||              // XML / SVG / S3 error root ≠ "HTML"
+  contentType.includes('xml') ||     // text/xml, application/xml, image/svg+xml
+  contentType.includes('json') ||    // application/json
+  contentType.includes('text/plain') // raw .txt responses
+) {
+  return;
+}
+```
+
+Without this guard, navigating to an S3 XML error page, JSON API endpoint, or plain-text URL caused the toolbar's shadow-DOM CSS and button text to be injected as raw text nodes, polluting the document tree and corrupting clipboard copies.
+
+### Toolbar behaviour
+
+- Fact Check button disabled + relabelled "Text too long" when selection > 400 chars (`FACT_CHECK_MAX_LENGTH`)
+- Disabled buttons: `opacity: 0.55`, `cursor: not-allowed`
 
 ---
 
@@ -259,7 +448,7 @@ The create-form (`div.note-item.note-create-form`) is a `<div>` not `<article>`,
 - Pencil button (non-citation only) → edit mode: title input + textarea, all other buttons disabled
 - Save with button or Ctrl/Cmd+Enter; cancel with button or Escape
 - Saves `customTitle` and `text`, marks `edited: true`
-- `updateQuickNote(id, { text, customTitle? })` in researchStorage
+- `updateQuickNote(id, { text, customTitle? })` in researchStorage; premium users also get `syncNoteToCloud` called
 - Edited badge: small pencil icon (`.note-edited-icon`) in the type label
 
 ### Save AI Response to Notes
@@ -272,10 +461,10 @@ Every completed, non-error assistant chat message shows a quiet **"Save to notes
 State: `savingMessageId: string | null` tracks which message's picker is open; `saveAiFolderId: string` tracks the chosen folder.
 
 `handleSaveAiResponse(content)`:
-1. Calls `stripScrollQuotes(content)` — strips `[label](#scroll-quote=phrase)` to plain `label` (scroll-quote links are chat-only; they'd be dead in notes)
+1. Calls `stripScrollQuotes(content)` — strips `[label](#scroll-quote=phrase)` to plain `label`
 2. Builds a `[Jun 7, 14:23] first 35 chars…` title from the stripped text
-3. Calls `resolveNoteTitle` for deduplication (same as all other save paths)
-4. Calls `saveQuickNote({ text: stripped, kind: 'ai-chat', folderId, customTitle })`
+3. Calls `resolveNoteTitle` for deduplication
+4. Calls `saveNoteWithSync({ text: stripped, kind: 'ai-chat', folderId, customTitle })`
 5. Clears `savingMessageId`, shows "AI response saved to notes." toast
 
 `stripScrollQuotes` is a module-level pure function in `App.tsx`:
@@ -285,7 +474,7 @@ function stripScrollQuotes(text: string): string {
 }
 ```
 
-**Note:** the welcome seed message (`id: 'welcome'`) is technically an assistant message and will also show the save button. Add a `message.id !== 'welcome'` guard if this is undesirable.
+**Note:** the welcome seed message (`id: 'welcome'`) technically shows a "Save to notes" button. Add a `message.id !== 'welcome'` guard in the message rendering if this is undesirable.
 
 ### Manual Note Creation
 
@@ -300,7 +489,9 @@ function stripScrollQuotes(text: string): string {
 
 ### Folder creation
 
-New folders are created via a **`+` circle button** (`.folder-add-btn`) at the end of the folder chip row — not an always-visible input. Clicking it opens a name modal (`isCreatingFolder` state), Enter/“Create folder” submits via `handleCreateFolder` → `createNoteFolder(name, activeProjectId)`, Escape/overlay cancels.
+New folders are created via a **`+` circle button** (`.folder-add-btn`) at the end of the folder chip row. Clicking it opens a name modal (`isCreatingFolder` state), Enter/"Create folder" submits via `handleCreateFolder`, Escape/overlay cancels.
+
+**Premium gate:** `handleCreateFolder` checks whether the user is non-premium and already has ≥ 1 custom folder (beyond General + Sources). If so, it aborts and sets `showPremiumUpsell = true` — the upsell modal's "See plans →" button navigates to the `account` tab.
 
 ### [[WikiLink]] References
 
@@ -367,13 +558,13 @@ Reads fresh notes/folders from storage (no stale React state). Rules:
 | Conflict in a **different** folder | `desired (FolderName)` |
 | Conflict in the **same** folder | `desired (2)`, `desired (3)`, … |
 
-Called from all save paths: `handleSelectionAction` (save-note, extract-citation), `saveNewNote`, `saveEditNote`.
+Called from all save paths: `handleSelectionAction` (save-note, extract-citation), `saveNewNote`, `saveEditNote`, `handleSaveAiResponse`.
 
 ---
 
 ## Source Tab
 
-The third panel tab is labelled **Source** (internal `ActiveTab` value: `'source'`). The tab nav sits directly under the header (the page **context box** was moved out of the global header into this tab to declutter). It shows, wrapped in `.source-area`:
+The third panel tab is labelled **Source** (internal `ActiveTab` value: `'source'`). It shows, wrapped in `.source-area`:
 
 1. **Context box** — collapsible current-page context (title, author, canonical URL, captured selection), at the top
 2. **Source header** — current page title + canonical URL (`.citation-source-info`)
@@ -382,7 +573,7 @@ The third panel tab is labelled **Source** (internal `ActiveTab` value: `'source
 
 The **Save to Notes** button (`BookmarkPlus` icon) calls `saveCitationAsNote(label, value)`:
 - Targets `projectSourcesFolder?.id ?? selectedFolderIdRef.current ?? DEFAULT_FOLDER_ID`
-- Saves a `kind: 'citation'` note with the citation text
+- Saves a `kind: 'citation'` note with the citation text via `saveNoteWithSync`
 - Toast: "APA citation saved to notes."
 
 `formatCitation('apa'|'mla', metadata, fallback)` lives in `lib/researchStorage.ts`.
@@ -497,12 +688,6 @@ Three items registered in `chrome.runtime.onInstalled` (inside `chrome.contextMe
 
 ---
 
-## Selection Toolbar (content.ts)
-
-- Fact Check button disabled + relabelled "Text too long" when selection > 400 chars
-- `FACT_CHECK_MAX_LENGTH = 400` constant
-- Disabled buttons: `opacity: 0.38`, `cursor: not-allowed`
-
 ## Fact Check
 
 - Tavily query truncated to 400 chars (`MAX_TAVILY_QUERY_LENGTH` in `lib/factCheck.ts`)
@@ -515,6 +700,8 @@ Three items registered in `chrome.runtime.onInstalled` (inside `chrome.contextMe
 - **AI chat not yet verified end-to-end in a live browser.** Code type-checks and builds; runtime behavior (streaming, memory, quote-jump) was not observed because this machine's Chrome has developer mode disabled by enterprise policy (`ExtensionDeveloperModeSettings`), which blocks loading the unpacked extension. Verify on an unmanaged Chrome/Chromium or via manual "Load unpacked".
 - **Document ingest not live-tested** for the same reason. The extraction logic (`unpdf`, `mammoth`, `jszip`) is browser-compatible and the build succeeds, but end-to-end behaviour (large PDFs, password-protected files, malformed PPTX) has not been exercised in a real extension session.
 - **Welcome message save button** — the welcome seed assistant message (`id: 'welcome'`) technically shows a "Save to notes" button. Add a `message.id !== 'welcome'` guard in the message rendering if this is unwanted.
+- **Stripe payment link not yet wired** — `WXT_STRIPE_PAYMENT_LINK` is a placeholder in `.env`. The upgrade button renders as disabled ("Payments not configured") until a real Payment Link URL is set and the extension is rebuilt.
+- **`SUPABASE_SERVICE_ROLE_KEY` not yet set** — needed by the webhook server (`npm run stripe:server`) to write `user_metadata`. Copy it from the Supabase dashboard (Project Settings → API → service_role).
 
 ## Current Branch & PR
 
@@ -526,6 +713,15 @@ Three items registered in `chrome.runtime.onInstalled` (inside `chrome.contextMe
 - PR #6 — page-context AI chat, Notes UI cleanup
 - PR #7 — document ingest (PDF/DOCX/PPTX dropzone + auto PDF tab detection + context menu Save / Fact Check / Cite)
 - PR #8 — Ask AI selection flow + save AI responses to notes *(open)*
+
+**Unmerged work (current session, on top of PR #8):**
+- Supabase auth + cloud sync (`lib/supabase.ts`, `lib/cloudSync.ts`, `AccountPanel.tsx`)
+- Stripe payment gateway (`lib/stripe.ts`, `scripts/stripe-webhook-server.mjs`)
+- Content script non-HTML document guard (`entrypoints/content.ts`)
+- Premium folder gate + `showPremiumUpsell` modal
+- `saveNoteWithSync` middleware replacing all direct `saveQuickNote` calls
+- `IS_STRIPE_CONFIGURED` build-time flag with graceful disabled-button state
+- `chrome.tabs.create` added to `types/chrome.d.ts`
 
 > Note: GitHub's repo **default branch is set to `feat/notes-overhaul`**, but trunk in practice is `main` (all PRs target it). Consider fixing the default-branch setting.
 
@@ -541,4 +737,8 @@ npm run compile
 npm run verify:persistence
 npm run verify:fact-check
 npm run build
+
+# Stripe local dev
+npm run stripe:server   # webhook receiver on :4242
+npm run stripe:listen   # Stripe CLI → forwards test events (requires Stripe CLI installed)
 ```
