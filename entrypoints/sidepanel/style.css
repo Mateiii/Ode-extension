@@ -1111,6 +1111,93 @@ article.note-item {
   border-color: #94a3b8;
 }
 
+.message-save-row {
+  border-top: 1px solid #f1f5f9;
+  margin-top: 8px;
+  padding-top: 6px;
+}
+
+.message-save-btn {
+  align-items: center;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: #64748b;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 500;
+  gap: 4px;
+  line-height: 1;
+  padding: 3px 6px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.message-save-btn:hover {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.message-save-picker {
+  align-items: center;
+  border-top: 1px solid #f1f5f9;
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+}
+
+.message-save-picker select {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #334155;
+  cursor: pointer;
+  flex: 1 1 0;
+  font-size: 12px;
+  font-weight: 600;
+  min-height: 28px;
+  min-width: 0;
+  outline: none;
+  padding: 0 6px;
+}
+
+.message-save-picker-btn {
+  align-items: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 3px;
+  min-height: 28px;
+  padding: 0 8px;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.message-save-picker-btn--confirm {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+.message-save-picker-btn--confirm:hover {
+  background: #1e293b;
+  border-color: #1e293b;
+}
+
+.message-save-picker-btn--cancel {
+  background: #ffffff;
+  color: #64748b;
+}
+
+.message-save-picker-btn--cancel:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
 .input-section {
   background: #ffffff;
   border-top: 1px solid #e2e8f0;
