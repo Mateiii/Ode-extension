@@ -1,7 +1,7 @@
 import { factCheckClaim } from '@/lib/factCheck';
 import type { PageMetadata } from '@/lib/pageMetadata';
 import { summarizePageNotes } from '@/lib/pageNotes';
-import { formatCitation, savePageNote } from '@/lib/researchStorage';
+import { formatCitation, savePageNote, type CitationStyle } from '@/lib/researchStorage';
 import { setPendingSidepanelAction } from '@/lib/sidepanelQueue';
 
 type ExtractedPage = {
@@ -159,13 +159,23 @@ export default defineBackground(() => {
 
       if (message.action === 'extract-citation') {
         const fallback = { title: sender.tab?.title, url: sender.tab?.url };
-        const apa = formatCitation('apa', message.metadata as PageMetadata | undefined, fallback);
-        const mla = formatCitation('mla', message.metadata as PageMetadata | undefined, fallback);
-        const citationText = `> "${message.text}"\n\nAPA: ${apa}\n\nMLA: ${mla}`;
-        const citationMessage = { ...sidepanelMessage, citationText };
-        openSidePanel(tabId).then(async () => {
-          await setPendingSidepanelAction(citationMessage);
-          chrome.runtime.sendMessage(citationMessage);
+        const metadata = message.metadata as PageMetadata | undefined;
+        chrome.storage.local.get('appSettings', (result) => {
+          const stored = (result['appSettings'] ?? {}) as { citationStyle?: string };
+          const label = stored.citationStyle ?? 'APA';
+          const style = label.toLowerCase() as CitationStyle;
+          const formatted = formatCitation(style, metadata, fallback);
+          const citationText = `> "${message.text}"\n\n${label}: ${formatted}`;
+          const citationMessage = { ...sidepanelMessage, citationText };
+          // Mirror openAndAnnounce ordering: fire openSidePanel concurrently so
+          // setPendingSidepanelAction wins the race against the 150 ms open delay
+          // and cold-start panels always find the action on load.
+          void (async () => {
+            const opening = openSidePanel(tabId);
+            await setPendingSidepanelAction(citationMessage);
+            await opening;
+            chrome.runtime.sendMessage(citationMessage);
+          })();
         });
         return true;
       }
@@ -316,21 +326,26 @@ export default defineBackground(() => {
       // No content-script metadata available for PDF / native viewer pages;
       // formatCitation gracefully falls back to title + url.
       const fallback = { title, url };
-      const apa = formatCitation('apa', undefined, fallback);
-      const mla = formatCitation('mla', undefined, fallback);
-      const citationText = `> "${text}"\n\nAPA: ${apa}\n\nMLA: ${mla}`;
-
-      const msg = {
-        type: 'sidepanel-selection-action' as const,
-        action: 'extract-citation' as const,
-        text, title, url, citationText,
-      };
-      openSidePanel(tabId)
-        .then(async () => {
+      chrome.storage.local.get('appSettings', (result) => {
+        const stored = (result['appSettings'] ?? {}) as { citationStyle?: string };
+        const label = stored.citationStyle ?? 'APA';
+        const style = label.toLowerCase() as CitationStyle;
+        const formatted = formatCitation(style, undefined, fallback);
+        const citationText = `> "${text}"\n\n${label}: ${formatted}`;
+        const msg = {
+          type: 'sidepanel-selection-action' as const,
+          action: 'extract-citation' as const,
+          text, title, url, citationText,
+        };
+        // Mirror openAndAnnounce: fire openSidePanel concurrently so the storage
+        // write wins the race and cold-start panels always find the action.
+        void (async () => {
+          const opening = openSidePanel(tabId);
           await setPendingSidepanelAction(msg);
+          await opening;
           chrome.runtime.sendMessage(msg);
-        })
-        .catch(() => { void chrome.runtime.lastError; });
+        })().catch(() => { void chrome.runtime.lastError; });
+      });
       return;
     }
   });
