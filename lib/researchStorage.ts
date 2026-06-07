@@ -13,7 +13,7 @@ export type QuickNote = {
   text: string;
   createdAt: string;
   folderId?: string;
-  kind?: 'selection' | 'page' | 'manual' | 'citation';
+  kind?: 'selection' | 'page' | 'manual' | 'citation' | 'ai-chat';
   edited?: boolean;
   pinned?: boolean;
   customTitle?: string;

@@ -247,6 +247,11 @@ function injectScrollQuotes(text: string, pageText: string): string {
   });
 }
 
+/** Strip [label](#scroll-quote=phrase) links from AI output before saving to notes. */
+function stripScrollQuotes(text: string): string {
+  return text.replace(/\[([^\]]+)\]\(#scroll-quote=[^)]+\)/g, '$1');
+}
+
 const QUICK_ACTIONS = [
   {
     label: 'Summarize Page',
@@ -310,7 +315,10 @@ function App() {
   const [fileSourceName, setFileSourceName] = useState<string | null>(null);
   const [isFileLoading, setIsFileLoading] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [savingMessageId, setSavingMessageId] = useState<string | null>(null);
+  const [saveAiFolderId, setSaveAiFolderId] = useState(DEFAULT_FOLDER_ID);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const fileSourceIsAutoRef = useRef(false);
   const handledActionKeysRef = useRef<Set<string>>(new Set());
   const toastTimerRef = useRef<number | undefined>(undefined);
@@ -640,6 +648,20 @@ function App() {
           });
       }
 
+      if (message.action === 'ask-ai') {
+        setActiveTab('chat');
+        const quoted = `> "${message.text.trim()}"\n\n`;
+        setInput(quoted);
+        window.setTimeout(() => {
+          const el = chatInputRef.current;
+          if (el) {
+            el.focus();
+            el.setSelectionRange(el.value.length, el.value.length);
+          }
+        }, 100);
+        return;
+      }
+
       if (message.action === 'extract-citation') {
         const targetFolderId = selectedFolderIdRef.current || DEFAULT_FOLDER_ID;
         setSelectedFolderId(targetFolderId);
@@ -684,9 +706,7 @@ function App() {
           content:
             message.action === 'save-note'
               ? 'Saved to Quick Notes.'
-              : message.action === 'fact-check'
-              ? 'Checking the highlighted claim...'
-              : 'Selection received. Backend AI handling will be connected in the next phase.',
+              : 'Checking the highlighted claim...',
           loading: message.action === 'fact-check',
           pendingActionKey: message.action === 'fact-check' ? actionKey : undefined,
         },
@@ -1182,6 +1202,30 @@ function App() {
     }
   };
 
+  const openAiSavePicker = (messageId: string) => {
+    setSaveAiFolderId(selectedFolderIdRef.current || DEFAULT_FOLDER_ID);
+    setSavingMessageId(messageId);
+  };
+
+  const handleSaveAiResponse = async (content: string) => {
+    const targetFolderId = saveAiFolderId || DEFAULT_FOLDER_ID;
+    const stripped = stripScrollQuotes(content);
+    const _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const _now = new Date();
+    const _ts = `${_MONTHS[_now.getMonth()]} ${_now.getDate()}, ${String(_now.getHours()).padStart(2,'0')}:${String(_now.getMinutes()).padStart(2,'0')}`;
+    const _plain = stripped.replace(/\s+/g, ' ').trim();
+    const _short = _plain.length > 35 ? _plain.slice(0, 34).trimEnd() + '…' : _plain;
+    const rawTitle = `[${_ts}] ${_short}`;
+    try {
+      const customTitle = await resolveNoteTitle(rawTitle, targetFolderId);
+      await saveQuickNote({ text: stripped, kind: 'ai-chat', folderId: targetFolderId, customTitle });
+      setSavingMessageId(null);
+      showToast('AI response saved to notes.');
+    } catch {
+      showToast('Could not save note.');
+    }
+  };
+
   const clearFileSource = () => {
     setFileText(null);
     setFileSourceName(null);
@@ -1358,6 +1402,49 @@ function App() {
                   ) : null}
                 </div>
               ) : null}
+              {message.role === 'assistant' && !message.loading && message.content && !message.error ? (
+                savingMessageId === message.id ? (
+                  <div className="message-save-picker">
+                    <select
+                      aria-label="Choose folder"
+                      value={saveAiFolderId}
+                      onChange={(e) => setSaveAiFolderId(e.target.value)}
+                    >
+                      {projectFolders.map((f) => (
+                        <option key={f.id} value={f.id}>{f.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="message-save-picker-btn message-save-picker-btn--confirm"
+                      type="button"
+                      onClick={() => { void handleSaveAiResponse(message.content); }}
+                    >
+                      <Check aria-hidden="true" size={13} />
+                      Save
+                    </button>
+                    <button
+                      aria-label="Cancel"
+                      className="message-save-picker-btn message-save-picker-btn--cancel"
+                      type="button"
+                      onClick={() => setSavingMessageId(null)}
+                    >
+                      <X aria-hidden="true" size={13} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="message-save-row">
+                    <button
+                      aria-label="Save to notes"
+                      className="message-save-btn"
+                      type="button"
+                      onClick={() => openAiSavePicker(message.id)}
+                    >
+                      <BookmarkPlus aria-hidden="true" size={13} />
+                      Save to notes
+                    </button>
+                  </div>
+                )
+              ) : null}
             </article>
           ))}
         </section>
@@ -1513,7 +1600,7 @@ function App() {
                     <header>
                       <strong>{getNoteTitle(note)}</strong>
                       <span className="note-type-label">
-                        {note.kind === 'page' ? 'Page notes' : note.kind === 'citation' ? 'Citation' : note.kind === 'manual' ? 'Note' : 'Selection note'}
+                        {note.kind === 'page' ? 'Page notes' : note.kind === 'citation' ? 'Citation' : note.kind === 'manual' ? 'Note' : note.kind === 'ai-chat' ? 'AI response' : 'Selection note'}
                         {note.edited ? <Pencil aria-label="Edited" className="note-edited-icon" size={10} /> : null}
                       </span>
                       <time dateTime={note.createdAt}>
@@ -1822,6 +1909,7 @@ function App() {
             aria-label="Ask a research question"
             disabled={isChatLoading}
             onChange={(event) => setInput(event.target.value)}
+            ref={chatInputRef}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
