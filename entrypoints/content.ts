@@ -15,44 +15,90 @@ export default defineContentScript({
 
         .bar {
           align-items: center;
-          background: #0f172a;
-          border: 1px solid rgba(148, 163, 184, 0.28);
+          background: oklch(0.151 0.022 247);
+          border: 1px solid oklch(0.640 0.015 248 / 0.24);
           border-radius: 8px;
-          box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22);
+          box-shadow: 0 8px 24px oklch(0.151 0.022 247 / 0.28), 0 2px 6px oklch(0.151 0.022 247 / 0.14);
           box-sizing: border-box;
-          display: none;
-          gap: 4px;
+          display: flex;
+          gap: 2px;
+          opacity: 0;
           padding: 4px;
+          pointer-events: none;
           position: fixed;
+          transform: translateY(5px) scale(0.97);
+          transition: opacity 130ms cubic-bezier(0.16, 1, 0.3, 1), transform 130ms cubic-bezier(0.16, 1, 0.3, 1);
           z-index: 2147483647;
+        }
+
+        .bar.bar--visible {
+          opacity: 1;
+          pointer-events: auto;
+          transform: none;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .bar {
+            transition: none;
+          }
+        }
+
+        .sep {
+          background: oklch(1.000 0.000 0 / 0.14);
+          border-radius: 1px;
+          flex-shrink: 0;
+          height: 16px;
+          margin: 0 2px;
+          width: 1px;
         }
 
         button {
           background: transparent;
           border: 0;
           border-radius: 6px;
-          color: #f8fafc;
+          color: oklch(0.855 0.007 248);
           cursor: pointer;
-          font: 500 12px/1.2 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          padding: 7px 9px;
+          font: 600 12px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          min-height: 28px;
+          padding: 0 9px;
+          transition: background 120ms cubic-bezier(0.16, 1, 0.3, 1), color 120ms cubic-bezier(0.16, 1, 0.3, 1);
           white-space: nowrap;
         }
 
         button:hover {
-          background: rgba(248, 250, 252, 0.12);
+          background: oklch(1.000 0.000 0 / 0.10);
+          color: oklch(1.000 0.000 0);
+        }
+
+        button:focus-visible {
+          outline: 2px solid oklch(0.51 0.11 89);
+          outline-offset: 2px;
         }
 
         button:disabled {
           cursor: not-allowed;
-          opacity: 0.38;
+          opacity: 0.55;
         }
 
         button:disabled:hover {
           background: transparent;
+          color: oklch(0.855 0.007 248);
+        }
+
+        button[data-action="ask-ai"] {
+          background: oklch(0.51 0.11 89);
+          color: oklch(1.000 0.000 0);
+          font-weight: 700;
+        }
+
+        button[data-action="ask-ai"]:hover {
+          background: oklch(0.44 0.10 89);
+          color: oklch(1.000 0.000 0);
         }
       </style>
       <div class="bar" part="bar">
         <button data-action="ask-ai" type="button">Ask AI</button>
+        <span class="sep" aria-hidden="true"></span>
         <button data-action="fact-check" type="button">Fact Check</button>
         <button data-action="save-note" type="button">Save to Notes</button>
         <button data-action="extract-citation" type="button">Cite</button>
@@ -67,7 +113,7 @@ export default defineContentScript({
     const factCheckBtn = shadow.querySelector<HTMLButtonElement>('[data-action="fact-check"]')!;
 
     const hideBar = () => {
-      actionBar.style.display = 'none';
+      actionBar.classList.remove('bar--visible');
     };
 
     const showBar = (selection: Selection) => {
@@ -79,8 +125,8 @@ export default defineContentScript({
         return;
       }
 
-      actionBar.style.display = 'flex';
-
+      // Position before revealing — element is display:flex but opacity:0, so
+      // getBoundingClientRect returns real dimensions without a visual flash.
       const barRect = actionBar.getBoundingClientRect();
       const top = Math.max(8, rect.top - barRect.height - 10);
       const left = Math.min(
@@ -90,6 +136,7 @@ export default defineContentScript({
 
       actionBar.style.top = `${top}px`;
       actionBar.style.left = `${left}px`;
+      actionBar.classList.add('bar--visible');
     };
 
     const getSelectedText = () => window.getSelection()?.toString().trim() ?? '';
