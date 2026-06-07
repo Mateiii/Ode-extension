@@ -61,7 +61,7 @@ type QuickNote = {
   text: string;
   createdAt: string;
   folderId?: string;
-  kind?: 'selection' | 'page' | 'manual' | 'citation';
+  kind?: 'selection' | 'page' | 'manual' | 'citation' | 'ai-chat';
   edited?: boolean;
   pinned?: boolean;         // floats note to top of folder view
   customTitle?: string;     // user-set or auto-generated; takes priority over metadata.title
@@ -172,7 +172,7 @@ All UI uses the scoped variables above — **never** raw `folders` / `notes`.
 | `save-note` | `openAndAnnounce()` — opens panel, sends message | Saves note to `selectedFolderIdRef.current` |
 | `extract-citation` | Formats APA/MLA, sends `citationText` in message | Saves citation note to selected folder |
 | `fact-check` | Runs `factCheckClaim`, sends result message | Renders result in chat |
-| `ask-ai` | `openAndAnnounce()` — **placeholder only**, no AI call yet | Shows "Selection received" stub — **needs implementation on `feat-ask-ai`** |
+| `ask-ai` | `openAndAnnounce()` — opens panel, sends message | Switches to Chat tab, pre-fills input with selection as block-quote, focuses textarea |
 
 `clearPendingSidepanelAction()` is called after `handleSelectionAction` in the live `onMessage` listener to prevent stale loading states on panel refresh.
 
@@ -197,6 +197,16 @@ The Chat tab is a streaming, page-grounded assistant. Core logic: `sendChatMessa
 ### Prompt (`buildSystemPrompt`)
 
 System message frames an "academic research co-pilot" with two rules: **semantic reasoning** (match synonyms/themes, don't refuse when thematically relevant material exists) and **citation hooks** (cite page text as `[label](#scroll-quote=verbatim phrase)`, never plain quotes). Page text is truncated to `PAGE_TEXT_LIMIT` (12 000 chars). A short citation reminder is folded into the latest user turn to keep `gpt-4o-mini` compliant.
+
+### Ask AI (selection → chat pre-fill)
+
+When the `ask-ai` toolbar or context-menu action fires, `handleSelectionAction` in App.tsx:
+1. Switches `activeTab` to `'chat'`
+2. Sets `input` to `> "${selection}"\n\n` (markdown block-quote, double newline so the user can type below it)
+3. Returns early — no messages are pushed to the chat history
+4. After a 100 ms timeout (lets React flush the tab switch), focuses the `<Textarea>` via `chatInputRef` and moves the cursor to the end
+
+The user then types their question and sends normally. `sendChatMessage` uses `fileText` when a document is loaded, so the flow works identically for web pages and uploaded documents.
 
 ### Quick-action chips
 
@@ -252,6 +262,31 @@ The create-form (`div.note-item.note-create-form`) is a `<div>` not `<article>`,
 - `updateQuickNote(id, { text, customTitle? })` in researchStorage
 - Edited badge: small pencil icon (`.note-edited-icon`) in the type label
 
+### Save AI Response to Notes
+
+Every completed, non-error assistant chat message shows a quiet **"Save to notes"** footer button (`.message-save-btn`, `BookmarkPlus` icon). Clicking it opens an inline folder picker (`.message-save-picker`) in place:
+
+- A native `<select>` listing all project folders, defaulting to `selectedFolderIdRef.current`
+- **Save** (dark filled button) and **Cancel** (ghost button)
+
+State: `savingMessageId: string | null` tracks which message's picker is open; `saveAiFolderId: string` tracks the chosen folder.
+
+`handleSaveAiResponse(content)`:
+1. Calls `stripScrollQuotes(content)` — strips `[label](#scroll-quote=phrase)` to plain `label` (scroll-quote links are chat-only; they'd be dead in notes)
+2. Builds a `[Jun 7, 14:23] first 35 chars…` title from the stripped text
+3. Calls `resolveNoteTitle` for deduplication (same as all other save paths)
+4. Calls `saveQuickNote({ text: stripped, kind: 'ai-chat', folderId, customTitle })`
+5. Clears `savingMessageId`, shows "AI response saved to notes." toast
+
+`stripScrollQuotes` is a module-level pure function in `App.tsx`:
+```ts
+function stripScrollQuotes(text: string): string {
+  return text.replace(/\[([^\]]+)\]\(#scroll-quote=[^)]+\)/g, '$1');
+}
+```
+
+**Note:** the welcome seed message (`id: 'welcome'`) is technically an assistant message and will also show the save button. Add a `message.id !== 'welcome'` guard if this is undesirable.
+
 ### Manual Note Creation
 
 - "New note" button → form appears at top of list
@@ -284,6 +319,7 @@ Navigation: `scrollToNoteId` state + `useEffect` with 50 ms timeout. Note articl
 | `'page'` | "Page notes" |
 | `'citation'` | "Citation" (blue badge) |
 | `'manual'` | "Note" |
+| `'ai-chat'` | "AI response" |
 | anything else | "Selection note" |
 
 ---
@@ -478,17 +514,18 @@ Three items registered in `chrome.runtime.onInstalled` (inside `chrome.contextMe
 
 - **AI chat not yet verified end-to-end in a live browser.** Code type-checks and builds; runtime behavior (streaming, memory, quote-jump) was not observed because this machine's Chrome has developer mode disabled by enterprise policy (`ExtensionDeveloperModeSettings`), which blocks loading the unpacked extension. Verify on an unmanaged Chrome/Chromium or via manual "Load unpacked".
 - **Document ingest not live-tested** for the same reason. The extraction logic (`unpdf`, `mammoth`, `jszip`) is browser-compatible and the build succeeds, but end-to-end behaviour (large PDFs, password-protected files, malformed PPTX) has not been exercised in a real extension session.
-- **`ask-ai` toolbar action is a stub.** Clicking "Ask AI" in the content-script toolbar opens the panel and shows a "Selection received" placeholder. No AI call is made. Full implementation is the goal of `feat-ask-ai` (current branch).
+- **Welcome message save button** — the welcome seed assistant message (`id: 'welcome'`) technically shows a "Save to notes" button. Add a `message.id !== 'welcome'` guard in the message rendering if this is unwanted.
 
 ## Current Branch & PR
 
-`feat-ask-ai` — branched from `main` after merging PR #7.
+`feat-ask-ai` — PR #8 open, targeting `main`.
 
 **Merged to `main`:**
 - PR #3 / #4 — `feat-citations` (citation saving)
 - PR #5 — Source tab, pinning, `.bbt` export, Sources folder
 - PR #6 — page-context AI chat, Notes UI cleanup
 - PR #7 — document ingest (PDF/DOCX/PPTX dropzone + auto PDF tab detection + context menu Save / Fact Check / Cite)
+- PR #8 — Ask AI selection flow + save AI responses to notes *(open)*
 
 > Note: GitHub's repo **default branch is set to `feat/notes-overhaul`**, but trunk in practice is `main` (all PRs target it). Consider fixing the default-branch setting.
 
