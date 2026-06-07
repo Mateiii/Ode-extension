@@ -48,6 +48,7 @@ import {
   NOTE_FOLDERS_STORAGE_KEY,
   PROJECTS_STORAGE_KEY,
   QUICK_NOTES_STORAGE_KEY,
+  type CitationStyle,
   type NoteFolder,
   type Project,
   type QuickNote,
@@ -56,6 +57,8 @@ import { formatBibtexBundle } from '@/lib/bibtex';
 import { streamPageChat } from '@/lib/pageChat';
 import { clearPendingSidepanelAction, getPendingSidepanelAction } from '@/lib/sidepanelQueue';
 import { extractFileText, extractTextFromPdfUrl } from '@/lib/fileParsers';
+import { useSettings } from '@/lib/useSettings';
+import { SettingsPanel } from './SettingsPanel';
 
 type ChatMessage = {
   id: string;
@@ -99,7 +102,9 @@ type PageNoteResultMessage = {
 };
 
 type RuntimeMessage = SelectionMessage | SelectionContextMessage | FactCheckResultMessage | PageNoteResultMessage;
-type ActiveTab = 'chat' | 'notes' | 'source';
+type ActiveTab = 'chat' | 'notes' | 'source' | 'settings';
+
+const IS_PREMIUM_USER = false;
 
 const actionLabels: Record<SelectionMessage['action'], string> = {
   'ask-ai': 'Ask AI',
@@ -317,6 +322,7 @@ function App() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [savingMessageId, setSavingMessageId] = useState<string | null>(null);
   const [saveAiFolderId, setSaveAiFolderId] = useState(DEFAULT_FOLDER_ID);
+  const { settings, updateSettings } = useSettings();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const fileSourceIsAutoRef = useRef(false);
@@ -931,16 +937,22 @@ function App() {
     url: context?.url,
   };
 
-  const citationRows = [
-    {
-      label: 'APA',
-      value: formatCitation('apa', context?.metadata, currentCitationFallback),
-    },
-    {
-      label: 'MLA',
-      value: formatCitation('mla', context?.metadata, currentCitationFallback),
-    },
+  const ALL_CITATION_STYLES: Array<{ label: string; style: CitationStyle }> = [
+    { label: 'APA',     style: 'apa' },
+    { label: 'MLA',     style: 'mla' },
+    { label: 'Harvard', style: 'harvard' },
+    { label: 'BibTeX',  style: 'bibtex' },
   ];
+
+  const citationRows = [
+    ...ALL_CITATION_STYLES.filter((s) => s.label === settings.citationStyle),
+    ...ALL_CITATION_STYLES.filter((s) => s.label !== settings.citationStyle),
+  ].map(({ label, style }) => ({
+    label,
+    style,
+    value: formatCitation(style, context?.metadata, currentCitationFallback),
+    isPreferred: label === settings.citationStyle,
+  }));
 
   const copyText = (value: string) => {
     navigator.clipboard?.writeText(value);
@@ -1312,7 +1324,15 @@ function App() {
           <span className="panel-wordmark-mark" aria-hidden="true" />
           <h1>Øde</h1>
         </div>
-        <Button className="settings-button" type="button" variant="outline" size="icon" aria-label="Open settings">
+        <Button
+          aria-label={activeTab === 'settings' ? 'Close settings' : 'Open settings'}
+          aria-pressed={activeTab === 'settings'}
+          className={`settings-button${activeTab === 'settings' ? ' settings-button--active' : ''}`}
+          onClick={() => setActiveTab(activeTab === 'settings' ? 'chat' : 'settings')}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
           <Settings aria-hidden="true" size={16} />
         </Button>
       </header>
@@ -1769,6 +1789,14 @@ function App() {
         </section>
       ) : null}
 
+      {activeTab === 'settings' ? (
+        <SettingsPanel
+          isPremiumUser={IS_PREMIUM_USER}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+      ) : null}
+
       {activeTab === 'source' ? (
         <div className="source-area">
           <section className={`context-box ${isContextExpanded ? 'expanded' : 'collapsed'}`} aria-label="Current page context">
@@ -1822,10 +1850,22 @@ function App() {
             ) : null}
           </div>
           {citationRows.map((citation) => (
-            <article className="citation-item" key={citation.label}>
+            <article
+              className={`citation-item${citation.isPreferred ? ' citation-item--preferred' : ''}`}
+              key={citation.label}
+            >
               <div>
-                <h3>{citation.label}</h3>
-                <p>{citation.value}</p>
+                <h3>
+                  {citation.label}
+                  {citation.isPreferred && (
+                    <span className="citation-preferred-badge" aria-label="Preferred citation style">
+                      Preferred
+                    </span>
+                  )}
+                </h3>
+                {citation.style === 'bibtex'
+                  ? <pre className="citation-bibtex">{citation.value}</pre>
+                  : <p>{citation.value}</p>}
               </div>
               <div className="citation-actions">
                 <Button
@@ -1855,7 +1895,7 @@ function App() {
         </div>
       ) : null}
 
-      <div className="input-section">
+      {activeTab !== 'settings' ? <div className="input-section">
         {activeTab === 'chat' ? (
           <>
             <div className="chat-chips" aria-label="Quick actions" role="toolbar">
@@ -1925,7 +1965,7 @@ function App() {
             Send
           </Button>
         </form>
-      </div>
+      </div> : null}
 
       {/* Folder delete confirmation */}
       {folderPendingDelete ? (

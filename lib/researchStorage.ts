@@ -29,7 +29,7 @@ export type NoteFolder = {
   projectId: string;
 };
 
-export type CitationStyle = 'apa' | 'mla';
+export type CitationStyle = 'apa' | 'mla' | 'harvard' | 'bibtex';
 
 export const QUICK_NOTES_STORAGE_KEY = 'quickNotes';
 export const NOTE_FOLDERS_STORAGE_KEY = 'noteFolders';
@@ -408,13 +408,36 @@ export function formatCitation(
   if (style === 'apa') {
     const authorPart = author || siteName || title;
     const sitePart = siteName && siteName !== authorPart ? `${siteName}. ` : '';
-
     return `${authorPart}. (${year}). ${title}. ${sitePart}${url}`.trim();
   }
 
+  if (style === 'harvard') {
+    const authorPart = author ? `${author} ` : (siteName ? `${siteName} ` : '');
+    const sitePart = siteName ? ` ${siteName}.` : '';
+    return `${authorPart}(${year}) ${title}.${sitePart} Available at: ${url} [Accessed: ${formatAccessDate()}].`.trim();
+  }
+
+  if (style === 'bibtex') {
+    const keyBase = (author || siteName || title)
+      .split(/\s+/)[0]
+      .replace(/[^a-z0-9]/gi, '')
+      .toLowerCase() || 'source';
+    const key = `${keyBase}${year === 'n.d.' ? '' : year}`;
+    const authorField = author || siteName || 'Unknown';
+    return [
+      `@misc{${key},`,
+      `  author  = {${authorField}},`,
+      `  title   = {{${title}}},`,
+      `  year    = {${year}},`,
+      `  url     = {${url}},`,
+      `  note    = {Accessed: ${formatAccessDate()}}`,
+      `}`,
+    ].join('\n');
+  }
+
+  // MLA
   const authorPart = author ? `${author}. ` : '';
   const sitePart = siteName ? `${siteName}, ` : '';
   const accessPart = `Accessed ${formatAccessDate()}.`;
-
   return `${authorPart}"${title}." ${sitePart}${url}. ${accessPart}`.trim();
 }
