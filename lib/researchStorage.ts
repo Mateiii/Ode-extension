@@ -20,6 +20,7 @@ export type QuickNote = {
   metadata?: PageMetadata;
   title?: string;
   url?: string;
+  syncedToCloud?: boolean;
 };
 
 export type NoteFolder = {
@@ -224,6 +225,31 @@ export async function updateQuickNote(id: string, updates: { text: string; custo
       note.id === id ? { ...note, ...updates, edited: true } : note,
     ),
   });
+}
+
+export async function markNoteAsSynced(id: string): Promise<void> {
+  const notes = await getQuickNotes();
+  await storageSet({
+    [QUICK_NOTES_STORAGE_KEY]: notes.map((n) =>
+      n.id === id ? { ...n, syncedToCloud: true } : n,
+    ),
+  });
+}
+
+/**
+ * Merges notes fetched from Supabase into local storage.
+ * Notes that already exist locally (by ID) are left untouched — local edits take priority.
+ * New notes from the cloud are prepended.
+ * Writing to storage triggers the chrome.storage.onChanged listener in App.tsx,
+ * which updates the React notes state automatically.
+ */
+export async function mergeCloudNotes(cloudNotes: QuickNote[]): Promise<void> {
+  if (cloudNotes.length === 0) return;
+  const local = await getQuickNotes();
+  const localIds = new Set(local.map((n) => n.id));
+  const incoming = cloudNotes.filter((n) => !localIds.has(n.id));
+  if (incoming.length === 0) return;
+  await storageSet({ [QUICK_NOTES_STORAGE_KEY]: [...incoming, ...local] });
 }
 
 export async function pinQuickNote(id: string, pinned: boolean) {
