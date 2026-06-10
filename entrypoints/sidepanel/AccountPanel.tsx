@@ -13,9 +13,10 @@ type Props = {
   onSignUp: (email: string, password: string) => Promise<{ error: string | null }>;
   onSignOut: () => Promise<void>;
   onUpgradeClick: () => void;
+  onRefreshStatus: () => Promise<void>;
 };
 
-export function AccountPanel({ user, isPremium, onSignIn, onSignUp, onSignOut, onUpgradeClick }: Props) {
+export function AccountPanel({ user, isPremium, onSignIn, onSignUp, onSignOut, onUpgradeClick, onRefreshStatus }: Props) {
   const [mode, setMode] = useState<AuthMode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -23,6 +24,7 @@ export function AccountPanel({ user, isPremium, onSignIn, onSignUp, onSignOut, o
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [signupDone, setSignupDone] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const switchMode = (next: AuthMode) => {
     setMode(next);
@@ -203,6 +205,19 @@ export function AccountPanel({ user, isPremium, onSignIn, onSignUp, onSignOut, o
             type="button"
           >
             {IS_STRIPE_CONFIGURED ? 'Upgrade to Pro →' : 'Payments not configured'}
+          </button>
+          <button
+            className="auth-mode-link"
+            disabled={refreshing}
+            onClick={async () => {
+              setRefreshing(true);
+              await onRefreshStatus();
+              setRefreshing(false);
+            }}
+            style={{ marginTop: '8px', display: 'block', width: '100%', textAlign: 'center' }}
+            type="button"
+          >
+            {refreshing ? 'Checking…' : 'Already paid? Refresh plan status'}
           </button>
         </div>
       )}

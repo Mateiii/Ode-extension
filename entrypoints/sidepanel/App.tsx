@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   Clipboard,
+  Cloud,
   Download,
   ExternalLink,
   FileDown,
@@ -37,6 +38,8 @@ import {
   deleteQuickNote,
   getNoteTitle,
   getQuickNotes,
+  markNoteAsSynced,
+  mergeCloudNotes,
   moveQuickNote,
   pinQuickNote,
   resolveNoteTitle,
@@ -60,7 +63,7 @@ import { clearPendingSidepanelAction, getPendingSidepanelAction } from '@/lib/si
 import { extractFileText, extractTextFromPdfUrl } from '@/lib/fileParsers';
 import { useSettings } from '@/lib/useSettings';
 import { supabase, signInWithEmail, signUpWithEmail, signOut, getIsPremiumUser, type SupabaseUser } from '@/lib/supabase';
-import { syncNoteToCloud } from '@/lib/cloudSync';
+import { fetchNotesFromCloud, syncNoteToCloud } from '@/lib/cloudSync';
 import { openStripeCheckout } from '@/lib/stripe';
 import { SettingsPanel } from './SettingsPanel';
 import { AccountPanel } from './AccountPanel';
@@ -260,16 +263,59 @@ function stripScrollQuotes(text: string): string {
   return text.replace(/\[([^\]]+)\]\(#scroll-quote=[^)]+\)/g, '$1');
 }
 
-const QUICK_ACTIONS = [
+const SLASH_COMMANDS = [
+  // ── Analysis ──────────────────────────────────────────────────────────────
   {
-    label: 'Summarize Page',
-    prompt: 'Summarize the main points of this page in clear bullet points.',
+    command: '/summarize',
+    description: 'Executive summary of key findings',
+    category: 'Analysis',
+    prompt: 'Summarize the main points and key findings of this page or document in a clear executive summary. Use bullet points to highlight the most important insights.',
   },
   {
-    label: 'List Limitations',
-    prompt: 'What are the key limitations, weaknesses, or caveats mentioned on this page?',
+    command: '/limitations',
+    description: 'Limitations, weaknesses & caveats',
+    category: 'Analysis',
+    prompt: 'Identify all limitations, weaknesses, caveats, and constraints mentioned in this text. Look specifically for: small sample sizes, missing data, methodological gaps, scope restrictions, or anything the authors admit could affect the validity of their conclusions.',
   },
-] as const;
+  {
+    command: '/methodology',
+    description: 'Extract research methods & datasets',
+    category: 'Analysis',
+    prompt: 'Extract the exact research methodology from this text. List the specific: research design, datasets used, variables measured, software tools or models employed, data collection methods, and analysis techniques.',
+  },
+  // ── Writing ───────────────────────────────────────────────────────────────
+  {
+    command: '/cite',
+    description: 'Insert citation in your preferred style',
+    category: 'Writing',
+    special: 'cite' as const,
+  },
+  {
+    command: '/counter',
+    description: 'Find weaknesses & counter-arguments',
+    category: 'Writing',
+    prompt: "Play devil's advocate. Analyse the arguments in this text and identify: logical weaknesses, unsupported assumptions, potential counterarguments a critic might raise, and alternative interpretations of the evidence presented.",
+  },
+  {
+    command: '/explain',
+    description: 'Break down jargon into plain language',
+    category: 'Writing',
+    prompt: 'Explain the main concepts in this text in clear, simple language. Break down any technical jargon, complex terminology, or dense academic language into plain explanations that anyone could understand.',
+  },
+  // ── Workspace ─────────────────────────────────────────────────────────────
+  {
+    command: '/save',
+    description: 'Save page summary to active folder',
+    category: 'Workspace',
+    special: 'save' as const,
+  },
+] satisfies Array<{
+  command: string;
+  description: string;
+  category: string;
+  prompt?: string;
+  special?: 'cite' | 'save';
+}>;
 
 function isPdfUrl(url: string): boolean {
   // Only handle http/https — file:// URLs can't be fetch()ed from extension pages.
@@ -301,6 +347,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat');
   const [isContextExpanded, setIsContextExpanded] = useState(false);
   const [input, setInput] = useState('');
+  const [slashMenuQuery, setSlashMenuQuery] = useState<string | null>(null);
+  const [slashMenuIndex, setSlashMenuIndex] = useState(0);
   const [newFolderName, setNewFolderName] = useState('');
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [noteStatus, setNoteStatus] = useState('');
@@ -340,14 +388,26 @@ function App() {
   // Refs let effects with [] deps always read current auth state.
   const isPremiumUserRef = useRef(false);
   const authUserIdRef = useRef<string | null>(null);
+  const storageModeRef = useRef(settings.storageMode);
+  // Set to true when Stripe checkout opens so the tab-switch listener knows to refresh the session.
+  const checkoutOpenedRef = useRef(false);
 
   useEffect(() => {
     selectedFolderIdRef.current = selectedFolderId;
   }, [selectedFolderId]);
 
   useEffect(() => {
+    const wasPremium = isPremiumUserRef.current;
     isPremiumUserRef.current = isPremiumUser;
-  }, [isPremiumUser]);
+    // Auto-enable cloud sync the first time the user reaches premium status.
+    if (isPremiumUser && !wasPremium) {
+      updateSettings({ storageMode: 'cloud' });
+    }
+  }, [isPremiumUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    storageModeRef.current = settings.storageMode;
+  }, [settings.storageMode]);
 
   useEffect(() => {
     authUserIdRef.current = authUser?.id ?? null;
@@ -355,17 +415,27 @@ function App() {
 
   // Initialise Supabase auth session and subscribe to future auth changes.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
         setAuthUser(session.user as SupabaseUser);
-        void getIsPremiumUser().then(setIsPremiumUser);
+        const premium = session.user.user_metadata?.is_premium === true;
+        setIsPremiumUser(premium);
+        if (premium) {
+          const cloudNotes = await fetchNotesFromCloud(session.user.id);
+          await mergeCloudNotes(cloudNotes);
+        }
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session?.user) {
         setAuthUser(session.user as SupabaseUser);
-        void getIsPremiumUser().then(setIsPremiumUser);
+        const premium = session.user.user_metadata?.is_premium === true;
+        setIsPremiumUser(premium);
+        if (premium && event === 'SIGNED_IN') {
+          const cloudNotes = await fetchNotesFromCloud(session.user.id);
+          await mergeCloudNotes(cloudNotes);
+        }
       } else {
         setAuthUser(null);
         setIsPremiumUser(false);
@@ -373,6 +443,24 @@ function App() {
     });
 
     return () => subscription.unsubscribe();
+  }, []);
+
+  // When the user returns from the Stripe checkout tab, refresh the session so
+  // the updated is_premium flag (set by the webhook server) is picked up immediately.
+  useEffect(() => {
+    const refresh = async () => {
+      if (!checkoutOpenedRef.current) return;
+      checkoutOpenedRef.current = false;
+      const { data: { session } } = await supabase.auth.refreshSession();
+      if (session?.user) {
+        setAuthUser(session.user as SupabaseUser);
+        setIsPremiumUser(session.user.user_metadata?.is_premium === true);
+      }
+    };
+
+    const onTabActivated = () => void refresh();
+    chrome.tabs.onActivated.addListener(onTabActivated);
+    return () => chrome.tabs.onActivated.removeListener(onTabActivated);
   }, []);
 
   // Auto-ingest web-hosted PDFs when the active tab is a PDF URL.
@@ -460,8 +548,12 @@ function App() {
     input: Omit<QuickNote, 'id' | 'createdAt'>,
   ): Promise<QuickNote> => {
     const note = await saveQuickNote(input);
-    if (isPremiumUserRef.current && authUserIdRef.current) {
-      void syncNoteToCloud(note, authUserIdRef.current).catch(() => {});
+    if (isPremiumUserRef.current && authUserIdRef.current && storageModeRef.current === 'cloud') {
+      void syncNoteToCloud(note, authUserIdRef.current).then(async (ok) => {
+        if (!ok) return;
+        await markNoteAsSynced(note.id);
+        setNotes((prev) => prev.map((n) => n.id === note.id ? { ...n, syncedToCloud: true } : n));
+      }).catch(() => {});
     }
     return note;
   }, []);
@@ -1124,6 +1216,46 @@ function App() {
     window.setTimeout(() => chrome.runtime.onMessage.removeListener(originalHandler), 13000);
   };
 
+  const filteredSlashCommands = slashMenuQuery !== null
+    ? SLASH_COMMANDS.filter((c) => c.command.slice(1).startsWith(slashMenuQuery))
+    : [];
+  const slashMenuOpen = filteredSlashCommands.length > 0;
+
+  const executeSlashCommand = (cmd: typeof SLASH_COMMANDS[number]) => {
+    setSlashMenuQuery(null);
+    setInput('');
+    if (cmd.special === 'save') {
+      takePageNotes();
+      return;
+    }
+    if (cmd.special === 'cite') {
+      const styleKey = (['apa', 'mla', 'harvard', 'bibtex'] as const)
+        .find((s) => s === settings.citationStyle.toLowerCase()) ?? 'apa';
+      const citText = formatCitation(styleKey, context?.metadata, currentCitationFallback);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant' as const,
+          content: `**${settings.citationStyle} citation:**\n\n${citText}`,
+        },
+      ]);
+      return;
+    }
+    if (cmd.prompt) void sendChatMessage(cmd.prompt);
+  };
+
+  const handleSlashInputChange = (value: string) => {
+    setInput(value);
+    const match = value.match(/\/(\w*)$/);
+    if (match) {
+      setSlashMenuQuery(match[1].toLowerCase());
+      setSlashMenuIndex(0);
+    } else {
+      setSlashMenuQuery(null);
+    }
+  };
+
   const downloadBlob = (payload: string, filename: string, mime: string) => {
     const blob = new Blob([payload], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -1199,8 +1331,12 @@ function App() {
       current.map((n) => n.id === note.id ? { ...n, ...updates, edited: true } : n),
     );
     await updateQuickNote(note.id, updates);
-    if (isPremiumUser && authUser) {
-      void syncNoteToCloud({ ...note, ...updates, edited: true }, authUser.id).catch(() => {});
+    if (isPremiumUser && authUser && settings.storageMode === 'cloud') {
+      void syncNoteToCloud({ ...note, ...updates, edited: true }, authUser.id).then(async (ok) => {
+        if (!ok) return;
+        await markNoteAsSynced(note.id);
+        setNotes((prev) => prev.map((n) => n.id === note.id ? { ...n, syncedToCloud: true } : n));
+      }).catch(() => {});
     }
     showToast(titleChanged && trimmedTitle !== editingTitleText.trim() ? `Renamed to "${trimmedTitle}".` : 'Note updated.');
   };
@@ -1700,6 +1836,9 @@ function App() {
                       <span className="note-type-label">
                         {note.kind === 'page' ? 'Page notes' : note.kind === 'citation' ? 'Citation' : note.kind === 'manual' ? 'Note' : note.kind === 'ai-chat' ? 'AI response' : 'Selection note'}
                         {note.edited ? <Pencil aria-label="Edited" className="note-edited-icon" size={10} /> : null}
+                        {note.syncedToCloud
+                          ? <Cloud aria-label="Saved to cloud" className="note-cloud-icon" size={10} />
+                          : null}
                       </span>
                       <time dateTime={note.createdAt}>
                         {new Intl.DateTimeFormat('en-US', {
@@ -1884,7 +2023,18 @@ function App() {
           onUpgradeClick={() => {
             if (!authUser) return;
             const opened = openStripeCheckout(authUser.id, authUser.email);
-            if (!opened) showToast('Stripe not configured — add WXT_STRIPE_PAYMENT_LINK to .env and rebuild.');
+            if (opened) {
+              checkoutOpenedRef.current = true;
+            } else {
+              showToast('Stripe not configured — add WXT_STRIPE_PAYMENT_LINK to .env and rebuild.');
+            }
+          }}
+          onRefreshStatus={async () => {
+            const { data: { session } } = await supabase.auth.refreshSession();
+            if (session?.user) {
+              setAuthUser(session.user as SupabaseUser);
+              setIsPremiumUser(session.user.user_metadata?.is_premium === true);
+            }
           }}
           user={authUser}
         />
@@ -1990,74 +2140,110 @@ function App() {
 
       {activeTab !== 'settings' && activeTab !== 'account' ? <div className="input-section">
         {activeTab === 'chat' ? (
-          <>
-            <div className="chat-chips" aria-label="Quick actions" role="toolbar">
-              {QUICK_ACTIONS.map(({ label, prompt }) => (
-                <button
-                  className="chat-chip"
-                  disabled={isChatLoading}
-                  key={label}
-                  onClick={() => { void sendChatMessage(prompt); }}
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div
-              className={`file-dropzone ${isDragOver ? 'file-dropzone--over' : ''} ${isFileLoading ? 'file-dropzone--loading' : ''}`}
-              onDragLeave={() => setIsDragOver(false)}
-              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-              onDrop={(e) => {
-                e.preventDefault();
-                setIsDragOver(false);
-                const file = e.dataTransfer.files[0];
+          <div
+            className={`file-dropzone ${isDragOver ? 'file-dropzone--over' : ''} ${isFileLoading ? 'file-dropzone--loading' : ''}`}
+            onDragLeave={() => setIsDragOver(false)}
+            onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragOver(false);
+              const file = e.dataTransfer.files[0];
+              if (file) void handleFileUpload(file);
+            }}
+            onClick={() => fileInputRef.current?.click()}
+            role="button"
+            tabIndex={0}
+            aria-label="Upload a document to use as chat context"
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
+          >
+            <Upload aria-hidden="true" size={14} />
+            <span>{isFileLoading ? 'Reading file…' : 'Drop or click to load PDF, DOCX, PPTX'}</span>
+            <input
+              accept=".pdf,.docx,.pptx"
+              aria-hidden="true"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
                 if (file) void handleFileUpload(file);
               }}
-              onClick={() => fileInputRef.current?.click()}
-              role="button"
-              tabIndex={0}
-              aria-label="Upload a document to use as chat context"
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
-            >
-              <Upload aria-hidden="true" size={14} />
-              <span>{isFileLoading ? 'Reading file…' : 'Drop or click to load PDF, DOCX, PPTX'}</span>
-              <input
-                accept=".pdf,.docx,.pptx"
-                aria-hidden="true"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) void handleFileUpload(file);
-                }}
-                ref={fileInputRef}
-                style={{ display: 'none' }}
-                tabIndex={-1}
-                type="file"
-              />
-            </div>
-          </>
+              ref={fileInputRef}
+              style={{ display: 'none' }}
+              tabIndex={-1}
+              type="file"
+            />
+          </div>
         ) : null}
-        <form className="input-bar" onSubmit={handleSubmit}>
-          <Textarea
-            aria-label="Ask a research question"
-            disabled={isChatLoading}
-            onChange={(event) => setInput(event.target.value)}
-            ref={chatInputRef}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                void sendChatMessage(input);
-              }
-            }}
-            placeholder="Ask about this page..."
-            rows={2}
-            value={input}
-          />
-          <Button disabled={isChatLoading} type="submit" aria-label="Send message">
-            <Send aria-hidden="true" size={16} />
-            Send
-          </Button>
-        </form>
+        <div className="input-bar-wrapper">
+          {slashMenuOpen && (
+            <div className="slash-menu" role="listbox" aria-label="Slash commands">
+              {filteredSlashCommands.map((cmd, i) => {
+                const showHeader = i === 0 || filteredSlashCommands[i - 1].category !== cmd.category;
+                return (
+                  <React.Fragment key={cmd.command}>
+                    {showHeader && (
+                      <p className="slash-menu-category">{cmd.category}</p>
+                    )}
+                    <button
+                      aria-selected={i === slashMenuIndex}
+                      className={`slash-menu-item${i === slashMenuIndex ? ' slash-menu-item--active' : ''}`}
+                      onMouseDown={(e) => { e.preventDefault(); executeSlashCommand(cmd); }}
+                      role="option"
+                      type="button"
+                    >
+                      <span className="slash-menu-command">{cmd.command}</span>
+                      <span className="slash-menu-desc">{cmd.description}</span>
+                    </button>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+          <form className="input-bar" onSubmit={handleSubmit}>
+            <Textarea
+              aria-label="Ask a research question or type / for commands"
+              aria-autocomplete="list"
+              aria-expanded={slashMenuOpen}
+              disabled={isChatLoading}
+              onChange={(event) => handleSlashInputChange(event.target.value)}
+              ref={chatInputRef}
+              onKeyDown={(event) => {
+                if (slashMenuOpen) {
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setSlashMenuIndex((i) => Math.min(filteredSlashCommands.length - 1, i + 1));
+                    return;
+                  }
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setSlashMenuIndex((i) => Math.max(0, i - 1));
+                    return;
+                  }
+                  if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+                    event.preventDefault();
+                    const cmd = filteredSlashCommands[slashMenuIndex];
+                    if (cmd) executeSlashCommand(cmd);
+                    return;
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setSlashMenuQuery(null);
+                    return;
+                  }
+                }
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendChatMessage(input);
+                }
+              }}
+              placeholder="Ask about this page… or type / for commands"
+              rows={2}
+              value={input}
+            />
+            <Button disabled={isChatLoading} type="submit" aria-label="Send message">
+              <Send aria-hidden="true" size={16} />
+              Send
+            </Button>
+          </form>
+        </div>
       </div> : null}
 
       {/* Folder delete confirmation */}
