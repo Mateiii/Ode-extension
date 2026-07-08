@@ -119,6 +119,12 @@ const actionLabels: Record<SelectionMessage['action'], string> = {
   'extract-citation': 'Cite',
 };
 
+/**
+ * chrome.storage.session key for the chat transcript — survives closing the
+ * sidepanel, cleared automatically when the browser shuts down.
+ */
+const CHAT_MESSAGES_SESSION_KEY = 'ode-chat-messages';
+
 const initialMessages: ChatMessage[] = [
   {
     id: 'welcome',
@@ -133,6 +139,18 @@ function getActionKey(message: Pick<SelectionMessage, 'action' | 'text'>) {
 
 /** Matches [label](#scroll-quote=exact phrase) emitted by the AI. */
 const SCROLL_QUOTE_RE = /\[([^\]]+)\]\(#scroll-quote=([^)]+)\)/g;
+
+/**
+ * Quotes are copied verbatim from page text, so they may contain bare `%`
+ * characters that make decodeURIComponent throw. Fall back to the raw string.
+ */
+function decodeQuote(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
 
 /**
  * Short phrases that mean "navigate to the text you just quoted" rather than
@@ -215,7 +233,7 @@ function parseScrollLinks(
 
     const label = match[1];
     const rawQuote = match[2];
-    const quote = decodeURIComponent(rawQuote);
+    const quote = decodeQuote(rawQuote);
 
     nodes.push(
       <a
@@ -396,6 +414,40 @@ function App() {
     selectedFolderIdRef.current = selectedFolderId;
   }, [selectedFolderId]);
 
+  // Guards the persist effect below so the default welcome message never
+  // overwrites a stored transcript before the restore read completes.
+  const chatRestoredRef = useRef(false);
+
+  // Restore the chat transcript from session storage when the panel reopens.
+  useEffect(() => {
+    chrome.storage.session.get([CHAT_MESSAGES_SESSION_KEY], (result) => {
+      void chrome.runtime.lastError;
+      const stored = result?.[CHAT_MESSAGES_SESSION_KEY] as ChatMessage[] | undefined;
+      if (Array.isArray(stored) && stored.length > 0) {
+        // Drop mid-stream placeholders — their request died with the panel.
+        const restored = stored
+          .map((m) => ({ ...m, loading: false }))
+          .filter((m) => m.content || m.error || m.factCheck);
+        setMessages((current) => {
+          // Keep anything that arrived while the read was in flight
+          // (e.g. a pending context-menu action).
+          const added = current.filter(
+            (m) => m.id !== 'welcome' && !restored.some((r) => r.id === m.id),
+          );
+          return restored.length > 0 ? [...restored, ...added] : current;
+        });
+      }
+      chatRestoredRef.current = true;
+    });
+  }, []);
+
+  // Persist the transcript on every change. storage.session is in-memory, so
+  // the per-chunk writes while a response streams are cheap.
+  useEffect(() => {
+    if (!chatRestoredRef.current) return;
+    chrome.storage.session.set({ [CHAT_MESSAGES_SESSION_KEY]: messages });
+  }, [messages]);
+
   useEffect(() => {
     const wasPremium = isPremiumUserRef.current;
     isPremiumUserRef.current = isPremiumUser;
@@ -563,9 +615,13 @@ function App() {
     chrome.storage.local.set({ [ACTIVE_PROJECT_STORAGE_KEY]: activeProjectId });
   }, [activeProjectId]);
 
+  // Keep the Source-tab context in sync with the active browser tab: scrape
+  // metadata on mount, when the user switches tabs, and after in-tab navigations.
   useEffect(() => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tab = tabs[0];
+    const refreshContext = (
+      tab: { id?: number; title?: string; url?: string } | undefined,
+      keepExisting: boolean,
+    ) => {
       if (!tab?.id) return;
       chrome.scripting.executeScript(
         {
@@ -675,23 +731,56 @@ function App() {
         },
         (results) => {
           void chrome.runtime.lastError;
-          const meta = results?.[0]?.result;
-          if (!meta) return;
-          setContext((current) =>
-            current
-              ? current
-              : {
-                  type: 'sidepanel-selection-context',
-                  text: '',
-                  metadata: meta,
-                  title: (meta as { title?: string }).title || tab.title,
-                  url: (meta as { canonicalUrl?: string }).canonicalUrl || tab.url,
-                },
-          );
+          const meta = results?.[0]?.result as PageMetadata | undefined;
+          // Restricted pages (chrome://, PDF viewer, web store) yield no
+          // metadata — fall back to the tab's own title/URL so the Source
+          // tab never shows a stale page.
+          if (!meta && !tab.url) return;
+          const next: SelectionContextMessage = {
+            type: 'sidepanel-selection-context',
+            text: '',
+            metadata: meta,
+            title: meta?.title || tab.title,
+            url: meta?.canonicalUrl || tab.url,
+          };
+          setContext((current) => (keepExisting && current ? current : next));
         },
       );
+    };
+
+    // Scrape the current tab on mount without clobbering a pending selection.
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      refreshContext(tabs[0], true);
     });
 
+    // Refresh when the user switches tabs…
+    const onContextTabActivated = ({ tabId }: { tabId: number; windowId: number }) => {
+      chrome.tabs.get(tabId, (tab) => {
+        void chrome.runtime.lastError;
+        refreshContext(tab, false);
+      });
+    };
+    chrome.tabs.onActivated.addListener(onContextTabActivated);
+
+    // …and when the active tab finishes navigating to a new page.
+    const onContextTabUpdated = (
+      tabId: number,
+      changeInfo: { status?: string },
+      tab: { active?: boolean; title?: string; url?: string },
+    ) => {
+      if (tab.active && changeInfo.status === 'complete') {
+        refreshContext({ ...tab, id: tabId }, false);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(onContextTabUpdated);
+
+    return () => {
+      chrome.tabs.onActivated.removeListener(onContextTabActivated);
+      chrome.tabs.onUpdated.removeListener(onContextTabUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
     // Load all data and active project in parallel; ensureProjectSourcesFolders runs
     // the Sources-folder migration and returns fresh projects + folders in one go.
     const loadInitialData = async () => {
@@ -957,7 +1046,7 @@ function App() {
       SCROLL_QUOTE_RE.lastIndex = 0;
       const match = SCROLL_QUOTE_RE.exec(lastAiContent);
       if (match) {
-        const quote = decodeURIComponent(match[2]);
+        const quote = decodeQuote(match[2]);
         executeScrollToQuote(quote);
         setMessages((current) => [
           ...current,
