@@ -36,10 +36,10 @@ import {
   deleteNoteFolder,
   deleteProject,
   deleteQuickNote,
+  getNoteFolders,
   getNoteTitle,
   getQuickNotes,
   markNoteAsSynced,
-  mergeCloudNotes,
   moveQuickNote,
   pinQuickNote,
   resolveNoteTitle,
@@ -63,7 +63,15 @@ import { clearPendingSidepanelAction, getPendingSidepanelAction } from '@/lib/si
 import { extractFileText, extractTextFromPdfUrl } from '@/lib/fileParsers';
 import { useSettings } from '@/lib/useSettings';
 import { supabase, signInWithEmail, signUpWithEmail, signOut, getIsPremiumUser, type SupabaseUser } from '@/lib/supabase';
-import { fetchNotesFromCloud, syncNoteToCloud } from '@/lib/cloudSync';
+import {
+  deleteFolderFromCloud,
+  deleteNoteFromCloud,
+  deleteProjectFromCloud,
+  syncFolderToCloud,
+  syncNoteToCloud,
+  syncNotesWithCloud,
+  syncProjectToCloud,
+} from '@/lib/cloudSync';
 import { openStripeCheckout } from '@/lib/stripe';
 import { SettingsPanel } from './SettingsPanel';
 import { AccountPanel } from './AccountPanel';
@@ -119,6 +127,10 @@ const actionLabels: Record<SelectionMessage['action'], string> = {
   'extract-citation': 'Cite',
 };
 
+// chrome.storage.session key for the chat transcript — survives closing the
+// sidepanel, cleared automatically when the browser shuts down.
+const CHAT_MESSAGES_SESSION_KEY = 'ode-chat-messages';
+
 const initialMessages: ChatMessage[] = [
   {
     id: 'welcome',
@@ -131,21 +143,25 @@ function getActionKey(message: Pick<SelectionMessage, 'action' | 'text'>) {
   return `${message.action}:${message.text}`;
 }
 
-/** Matches [label](#scroll-quote=exact phrase) emitted by the AI. */
 const SCROLL_QUOTE_RE = /\[([^\]]+)\]\(#scroll-quote=([^)]+)\)/g;
 
-/**
- * Short phrases that mean "navigate to the text you just quoted" rather than
- * asking a new question. Checked before sending to the AI.
- */
+// Quotes are copied verbatim from page text, so they may contain bare `%`
+// characters that make decodeURIComponent throw. Fall back to the raw string.
+function decodeQuote(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+// Short phrases that mean "navigate to the text you just quoted" rather than
+// asking a new question. Checked before sending to the AI.
 const NAV_INTENT_RE =
   /^(take me there|show me( where)?|go there|scroll to (it|that)|bring me there|navigate there|go to that( part)?|jump to (it|that)|where is (it|that)|show (me )?(where it is|that part)|highlight it|jump there|find it on the page)[\s.!?]*$/i;
 
-/**
- * Execute a scroll-and-highlight in the active browser tab.
- * Extracted to module level so both `sendChatMessage` and `handleScrollToQuote`
- * can call it without ordering issues.
- */
+// Extracted to module level so both `sendChatMessage` and `handleScrollToQuote`
+// can call it without ordering issues.
 function executeScrollToQuote(quote: string) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tabId = tabs[0]?.id;
@@ -154,14 +170,12 @@ function executeScrollToQuote(quote: string) {
       {
         target: { tabId },
         func: (quotedText: string) => {
-          // 1. Native Chromium "Scroll to Text Fragment" attempt.
           try {
             window.location.hash = `:~:text=${encodeURIComponent(quotedText)}`;
           } catch {
-            /* some pages disallow hash writes — fall through to DOM search */
+            // some pages disallow hash writes — fall through to DOM search
           }
 
-          // 2. Reliable fallback: case-insensitive DOM text search + smooth scroll + highlight.
           const win = window as Window & { find?: (...a: unknown[]) => boolean };
           const found =
             win.find?.(quotedText, false, false, true, false, true, false) ??
@@ -196,10 +210,6 @@ function executeScrollToQuote(quote: string) {
   });
 }
 
-/**
- * Split a single line of AI text into an array of React nodes, turning any
- * #scroll-quote markdown links into clickable <a> elements.
- */
 function parseScrollLinks(
   text: string,
   onQuoteClick: (quote: string) => void,
@@ -215,7 +225,7 @@ function parseScrollLinks(
 
     const label = match[1];
     const rawQuote = match[2];
-    const quote = decodeURIComponent(rawQuote);
+    const quote = decodeQuote(rawQuote);
 
     nodes.push(
       <a
@@ -235,11 +245,8 @@ function parseScrollLinks(
   return nodes.length ? nodes : [text];
 }
 
-/**
- * Fallback post-processor: if the model returned plain-quoted text that exists
- * verbatim in the page, convert it to a scroll-quote link automatically.
- * Handles ASCII `"…"` and curly `"…"` quote pairs.
- */
+// Fallback post-processor: if the model returned plain-quoted text that exists
+// verbatim in the page, convert it to a scroll-quote link automatically.
 const PLAIN_QUOTE_RE = /["“]([^"“”\n]{10,200})["”]/g;
 
 function injectScrollQuotes(text: string, pageText: string): string {
@@ -247,9 +254,8 @@ function injectScrollQuotes(text: string, pageText: string): string {
   const pageNorm = pageText.toLowerCase();
 
   return text.replace(PLAIN_QUOTE_RE, (match, quoted: string) => {
-    const phrase = quoted.trim().replace(/[.!?,;:]+$/, ''); // strip trailing punctuation
+    const phrase = quoted.trim().replace(/[.!?,;:]+$/, '');
     if (phrase.length < 10) return match;
-    // Skip if already wrapped as a scroll-quote link
     if (text.includes(`(#scroll-quote=${phrase}`)) return match;
     if (pageNorm.includes(phrase.toLowerCase())) {
       return `[${phrase}](#scroll-quote=${phrase})`;
@@ -258,13 +264,11 @@ function injectScrollQuotes(text: string, pageText: string): string {
   });
 }
 
-/** Strip [label](#scroll-quote=phrase) links from AI output before saving to notes. */
 function stripScrollQuotes(text: string): string {
   return text.replace(/\[([^\]]+)\]\(#scroll-quote=[^)]+\)/g, '$1');
 }
 
 const SLASH_COMMANDS = [
-  // ── Analysis ──────────────────────────────────────────────────────────────
   {
     command: '/summarize',
     description: 'Executive summary of key findings',
@@ -283,7 +287,6 @@ const SLASH_COMMANDS = [
     category: 'Analysis',
     prompt: 'Extract the exact research methodology from this text. List the specific: research design, datasets used, variables measured, software tools or models employed, data collection methods, and analysis techniques.',
   },
-  // ── Writing ───────────────────────────────────────────────────────────────
   {
     command: '/cite',
     description: 'Insert citation in your preferred style',
@@ -302,7 +305,6 @@ const SLASH_COMMANDS = [
     category: 'Writing',
     prompt: 'Explain the main concepts in this text in clear, simple language. Break down any technical jargon, complex terminology, or dense academic language into plain explanations that anyone could understand.',
   },
-  // ── Workspace ─────────────────────────────────────────────────────────────
   {
     command: '/save',
     description: 'Save page summary to active folder',
@@ -389,12 +391,42 @@ function App() {
   const isPremiumUserRef = useRef(false);
   const authUserIdRef = useRef<string | null>(null);
   const storageModeRef = useRef(settings.storageMode);
-  // Set to true when Stripe checkout opens so the tab-switch listener knows to refresh the session.
   const checkoutOpenedRef = useRef(false);
 
   useEffect(() => {
     selectedFolderIdRef.current = selectedFolderId;
   }, [selectedFolderId]);
+
+  // Guards the persist effect below so the default welcome message never
+  // overwrites a stored transcript before the restore read completes.
+  const chatRestoredRef = useRef(false);
+
+  useEffect(() => {
+    chrome.storage.session.get([CHAT_MESSAGES_SESSION_KEY], (result) => {
+      void chrome.runtime.lastError;
+      const stored = result?.[CHAT_MESSAGES_SESSION_KEY] as ChatMessage[] | undefined;
+      if (Array.isArray(stored) && stored.length > 0) {
+        // Drop mid-stream placeholders — their request died with the panel.
+        const restored = stored
+          .map((m) => ({ ...m, loading: false }))
+          .filter((m) => m.content || m.error || m.factCheck);
+        setMessages((current) => {
+          // Keep anything that arrived while the read was in flight (e.g. a pending context-menu action).
+          const added = current.filter(
+            (m) => m.id !== 'welcome' && !restored.some((r) => r.id === m.id),
+          );
+          return restored.length > 0 ? [...restored, ...added] : current;
+        });
+      }
+      chatRestoredRef.current = true;
+    });
+  }, []);
+
+  // storage.session is in-memory, so the per-chunk writes while a response streams are cheap.
+  useEffect(() => {
+    if (!chatRestoredRef.current) return;
+    chrome.storage.session.set({ [CHAT_MESSAGES_SESSION_KEY]: messages });
+  }, [messages]);
 
   useEffect(() => {
     const wasPremium = isPremiumUserRef.current;
@@ -413,17 +445,27 @@ function App() {
     authUserIdRef.current = authUser?.id ?? null;
   }, [authUser]);
 
-  // Initialise Supabase auth session and subscribe to future auth changes.
   useEffect(() => {
+    const runCloudSync = async (userId: string) => {
+      try {
+        const { pulled, pushed, pushFailed } = await syncNotesWithCloud(userId);
+        if (pushFailed > 0) {
+          showToast(`Cloud sync: ${pushFailed} note(s) failed to upload — see console.`);
+        } else if (pulled > 0 || pushed > 0) {
+          showToast(`Cloud sync: ${pulled} pulled, ${pushed} uploaded.`);
+        }
+      } catch (err) {
+        console.error('[Ode] Cloud sync failed:', err);
+        showToast('Cloud sync failed — check your connection.');
+      }
+    };
+
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
         setAuthUser(session.user as SupabaseUser);
         const premium = session.user.user_metadata?.is_premium === true;
         setIsPremiumUser(premium);
-        if (premium) {
-          const cloudNotes = await fetchNotesFromCloud(session.user.id);
-          await mergeCloudNotes(cloudNotes);
-        }
+        if (premium) await runCloudSync(session.user.id);
       }
     });
 
@@ -433,8 +475,7 @@ function App() {
         const premium = session.user.user_metadata?.is_premium === true;
         setIsPremiumUser(premium);
         if (premium && event === 'SIGNED_IN') {
-          const cloudNotes = await fetchNotesFromCloud(session.user.id);
-          await mergeCloudNotes(cloudNotes);
+          await runCloudSync(session.user.id);
         }
       } else {
         setAuthUser(null);
@@ -445,8 +486,8 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // When the user returns from the Stripe checkout tab, refresh the session so
-  // the updated is_premium flag (set by the webhook server) is picked up immediately.
+  // When the user returns from the Stripe checkout tab, refresh the session so the
+  // updated is_premium flag (set by the webhook server) is picked up immediately.
   useEffect(() => {
     const refresh = async () => {
       if (!checkoutOpenedRef.current) return;
@@ -479,7 +520,6 @@ function App() {
         return;
       }
 
-      // Skip if already loaded this exact URL.
       if (url === lastIngestedUrl) return;
       lastIngestedUrl = url;
 
@@ -505,12 +545,10 @@ function App() {
       }
     };
 
-    // Check current tab on mount.
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       void tryIngestTab(tabs[0]?.url);
     });
 
-    // Fired when the user switches tabs.
     const onActivated = ({ tabId }: { tabId: number; windowId: number }) => {
       chrome.tabs.get(tabId, (tab) => {
         void tryIngestTab(tab.url);
@@ -518,7 +556,6 @@ function App() {
     };
     chrome.tabs.onActivated.addListener(onActivated);
 
-    // Fired when the active tab navigates to a new URL.
     const onUpdated = (
       _tabId: number,
       changeInfo: { status?: string; url?: string },
@@ -542,8 +579,8 @@ function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), 3000);
   };
 
-  // Wraps saveQuickNote with a fire-and-forget cloud upsert for premium users.
-  // Uses refs so it can be called safely from effects with [] deps.
+  // Fire-and-forget cloud upsert for premium users; uses refs so it can be
+  // called safely from effects with [] deps.
   const saveNoteWithSync = useCallback(async (
     input: Omit<QuickNote, 'id' | 'createdAt'>,
   ): Promise<QuickNote> => {
@@ -558,14 +595,15 @@ function App() {
     return note;
   }, []);
 
-  // Persist active project ID whenever it changes
   useEffect(() => {
     chrome.storage.local.set({ [ACTIVE_PROJECT_STORAGE_KEY]: activeProjectId });
   }, [activeProjectId]);
 
   useEffect(() => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tab = tabs[0];
+    const refreshContext = (
+      tab: { id?: number; title?: string; url?: string } | undefined,
+      keepExisting: boolean,
+    ) => {
       if (!tab?.id) return;
       chrome.scripting.executeScript(
         {
@@ -675,25 +713,55 @@ function App() {
         },
         (results) => {
           void chrome.runtime.lastError;
-          const meta = results?.[0]?.result;
-          if (!meta) return;
-          setContext((current) =>
-            current
-              ? current
-              : {
-                  type: 'sidepanel-selection-context',
-                  text: '',
-                  metadata: meta,
-                  title: (meta as { title?: string }).title || tab.title,
-                  url: (meta as { canonicalUrl?: string }).canonicalUrl || tab.url,
-                },
-          );
+          const meta = results?.[0]?.result as PageMetadata | undefined;
+          // Restricted pages (chrome://, PDF viewer, web store) yield no metadata —
+          // fall back to the tab's own title/URL so the Source tab never shows a stale page.
+          if (!meta && !tab.url) return;
+          const next: SelectionContextMessage = {
+            type: 'sidepanel-selection-context',
+            text: '',
+            metadata: meta,
+            title: meta?.title || tab.title,
+            url: meta?.canonicalUrl || tab.url,
+          };
+          setContext((current) => (keepExisting && current ? current : next));
         },
       );
+    };
+
+    // Scrape the current tab on mount without clobbering a pending selection.
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      refreshContext(tabs[0], true);
     });
 
-    // Load all data and active project in parallel; ensureProjectSourcesFolders runs
-    // the Sources-folder migration and returns fresh projects + folders in one go.
+    const onContextTabActivated = ({ tabId }: { tabId: number; windowId: number }) => {
+      chrome.tabs.get(tabId, (tab) => {
+        void chrome.runtime.lastError;
+        refreshContext(tab, false);
+      });
+    };
+    chrome.tabs.onActivated.addListener(onContextTabActivated);
+
+    const onContextTabUpdated = (
+      tabId: number,
+      changeInfo: { status?: string },
+      tab: { active?: boolean; title?: string; url?: string },
+    ) => {
+      if (tab.active && changeInfo.status === 'complete') {
+        refreshContext({ ...tab, id: tabId }, false);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(onContextTabUpdated);
+
+    return () => {
+      chrome.tabs.onActivated.removeListener(onContextTabActivated);
+      chrome.tabs.onUpdated.removeListener(onContextTabUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
+    // ensureProjectSourcesFolders runs the Sources-folder migration and
+    // returns fresh projects + folders in one go.
     const loadInitialData = async () => {
       const [storedNotes, { projects: storedProjects, folders: storedFolders }] = await Promise.all([
         getQuickNotes(),
@@ -910,6 +978,15 @@ function App() {
           setSelectedFolderId(savedNote.folderId || DEFAULT_FOLDER_ID);
           setNoteStatus('');
           showToast('Page notes saved.');
+          // The background saved this note locally only (it has no auth state) —
+          // push it to the cloud from here, mirroring saveNoteWithSync.
+          if (isPremiumUserRef.current && authUserIdRef.current && storageModeRef.current === 'cloud') {
+            void syncNoteToCloud(savedNote, authUserIdRef.current).then(async (ok) => {
+              if (!ok) return;
+              await markNoteAsSynced(savedNote.id);
+              setNotes((prev) => prev.map((n) => n.id === savedNote.id ? { ...n, syncedToCloud: true } : n));
+            }).catch(() => {});
+          }
         } else {
           setNoteStatus('');
           showToast(message.error || 'Could not take page notes.');
@@ -957,7 +1034,7 @@ function App() {
       SCROLL_QUOTE_RE.lastIndex = 0;
       const match = SCROLL_QUOTE_RE.exec(lastAiContent);
       if (match) {
-        const quote = decodeURIComponent(match[2]);
+        const quote = decodeQuote(match[2]);
         executeScrollToQuote(quote);
         setMessages((current) => [
           ...current,
@@ -978,13 +1055,11 @@ function App() {
     ]);
     setIsChatLoading(true);
 
-    // Cancel any in-flight request before starting a new one
     chatAbortRef.current?.abort();
     const controller = new AbortController();
     chatAbortRef.current = controller;
 
     try {
-      // When a file is loaded, use its extracted text; otherwise ask the background.
       const pageText = fileText !== null
         ? fileText
         : await new Promise<string>((resolve) => {
@@ -1001,8 +1076,7 @@ function App() {
             });
           });
 
-      // Build conversational memory: prior real turns + this new user message,
-      // mapped to OpenAI {role, content} shape, capped at the last 6 turns.
+      // Capped at the last 6 turns.
       const history = [
         ...messages
           .filter(
@@ -1017,7 +1091,6 @@ function App() {
         { role: 'user' as const, content },
       ].slice(-6);
 
-      // Stream the response, updating the placeholder message on every chunk
       let accum = '';
       await streamPageChat(
         pageText,
@@ -1034,8 +1107,7 @@ function App() {
         controller.signal,
       );
 
-      // Post-process: if the model used plain quotes for page text, convert them
-      // to scroll-quote links. Also clears loading for the zero-chunks case.
+      // Also clears loading for the zero-chunks case.
       const finalContent = injectScrollQuotes(accum, pageText);
       setMessages((current) =>
         current.map((m) =>
@@ -1062,10 +1134,8 @@ function App() {
     void sendChatMessage(input);
   };
 
-  /** Scroll the active browser tab to the quoted text and briefly highlight it. */
   const handleScrollToQuote = (quote: string) => executeScrollToQuote(quote);
 
-  // Derived: project-scoped data
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
   const projectFolders = folders.filter((f) => f.projectId === activeProjectId);
   const activeProjectFolderIds = new Set(projectFolders.map((f) => f.id));
@@ -1113,7 +1183,6 @@ function App() {
     ...visibleNotes.filter((n) => !n.pinned),
   ];
 
-  // Project handlers
   const switchProject = (projectId: string) => {
     const project = projects.find((p) => p.id === projectId);
     if (!project) return;
@@ -1127,6 +1196,18 @@ function App() {
     const name = newProjectName.trim();
     if (!name) return;
     const project = await createProject(name);
+    // Push the new project + its General/Sources folders so notes saved into
+    // them land in the right place when fetched on another machine.
+    if (isPremiumUserRef.current && authUserIdRef.current && storageModeRef.current === 'cloud') {
+      const uid = authUserIdRef.current;
+      void (async () => {
+        await syncProjectToCloud(project, uid);
+        const allFolders = await getNoteFolders();
+        for (const f of allFolders.filter((x) => x.projectId === project.id)) {
+          await syncFolderToCloud(f, uid);
+        }
+      })().catch(() => {});
+    }
     setActiveProjectId(project.id);
     setSelectedFolderId(project.defaultFolderId);
     setIsCreatingProject(false);
@@ -1140,14 +1221,20 @@ function App() {
       setProjectPendingDelete(null);
       return;
     }
+    // Capture the project's folder ids before the local cascade delete removes them.
+    const projectFolderIdsToDelete = folders
+      .filter((f) => f.projectId === project.id)
+      .map((f) => f.id);
     await deleteProject(project.id);
+    if (authUserIdRef.current) {
+      void deleteProjectFromCloud(project.id, projectFolderIdsToDelete, authUserIdRef.current);
+    }
     setActiveProjectId(DEFAULT_PROJECT_ID);
     setSelectedFolderId(DEFAULT_FOLDER_ID);
     setProjectPendingDelete(null);
     showToast(`Project "${project.name}" and all its data deleted.`);
   };
 
-  // Folder handlers
   const handleCreateFolder = async () => {
     if (!isPremiumUser) {
       // Free tier: only the 2 system folders (General + Sources) are allowed.
@@ -1161,6 +1248,9 @@ function App() {
       }
     }
     const folder = await createNoteFolder(newFolderName, activeProjectId);
+    if (isPremiumUserRef.current && authUserIdRef.current && storageModeRef.current === 'cloud') {
+      void syncFolderToCloud(folder, authUserIdRef.current).catch(() => {});
+    }
     setSelectedFolderId(folder.id);
     setNewFolderName('');
     setIsCreatingFolder(false);
@@ -1174,6 +1264,9 @@ function App() {
     }
 
     await deleteNoteFolder(folder.id);
+    if (authUserIdRef.current) {
+      void deleteFolderFromCloud(folder.id, authUserIdRef.current);
+    }
     if (selectedFolderId === folder.id) {
       setSelectedFolderId(activeProject?.defaultFolderId ?? DEFAULT_FOLDER_ID);
     }
@@ -1289,6 +1382,10 @@ function App() {
   const handleDeleteNote = async (note: QuickNote) => {
     setNotes((current) => current.filter((item) => item.id !== note.id));
     await deleteQuickNote(note.id);
+    // Remove the cloud copy too — otherwise the next sign-in merge resurrects it.
+    if (note.syncedToCloud && authUserIdRef.current) {
+      void deleteNoteFromCloud(note.id, authUserIdRef.current);
+    }
     showToast('Note deleted.');
   };
 
@@ -1298,6 +1395,14 @@ function App() {
       current.map((item) => (item.id === note.id ? { ...item, folderId } : item)),
     );
     await moveQuickNote(note.id, folderId);
+    // moveQuickNote cleared syncedToCloud; try to re-push the new folder_id now.
+    if (isPremiumUserRef.current && authUserIdRef.current && storageModeRef.current === 'cloud') {
+      void syncNoteToCloud({ ...note, folderId }, authUserIdRef.current).then(async (ok) => {
+        if (!ok) return;
+        await markNoteAsSynced(note.id);
+        setNotes((prev) => prev.map((n) => n.id === note.id ? { ...n, syncedToCloud: true } : n));
+      }).catch(() => {});
+    }
     const target = projectFolders.find((f) => f.id === folderId);
     showToast(`Moved to ${target?.name || 'folder'}.`);
   };
@@ -1472,7 +1577,6 @@ function App() {
     setScrollToNoteId(noteId);
   };
 
-  // Counts for project delete confirmation
   const pendingDeleteFolderCount = projectPendingDelete
     ? folders.filter((f) => f.projectId === projectPendingDelete.id).length
     : 0;
@@ -1486,7 +1590,6 @@ function App() {
   return (
     <main className="sidepanel-shell">
 
-      {/* Project switcher bar */}
       <div className="project-bar">
         <Layers aria-hidden="true" className="project-bar-icon" size={14} />
         <select
@@ -1803,7 +1906,6 @@ function App() {
                   id={`note-${note.id}`}
                   key={note.id}
                 >
-                  {/* Left column — reorder arrows */}
                   <div className="note-reorder">
                     <Button
                       aria-label="Move note up"
@@ -1829,7 +1931,6 @@ function App() {
                     </Button>
                   </div>
 
-                  {/* Right column — all note content */}
                   <div className="note-content">
                     <header>
                       <strong>{getNoteTitle(note)}</strong>
@@ -2246,7 +2347,6 @@ function App() {
         </div>
       </div> : null}
 
-      {/* Folder delete confirmation */}
       {folderPendingDelete ? (
         <div
           className="modal-overlay"
@@ -2277,7 +2377,6 @@ function App() {
         </div>
       ) : null}
 
-      {/* Project delete confirmation */}
       {projectPendingDelete ? (
         <div
           className="modal-overlay"
@@ -2313,7 +2412,6 @@ function App() {
         </div>
       ) : null}
 
-      {/* New project modal */}
       {isCreatingProject ? (
         <div
           className="modal-overlay"
@@ -2361,7 +2459,6 @@ function App() {
         </div>
       ) : null}
 
-      {/* New folder modal */}
       {isCreatingFolder ? (
         <div
           className="modal-overlay"

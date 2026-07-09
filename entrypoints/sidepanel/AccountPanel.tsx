@@ -59,9 +59,7 @@ export function AccountPanel({ user, isPremium, onSignIn, onSignUp, onSignOut, o
     }
   };
 
-  // ── Signed out ────────────────────────────────────────────────
   if (!user) {
-    // Post-signup confirmation screen
     if (signupDone) {
       return (
         <section className="account-panel" aria-label="Account">
@@ -93,7 +91,6 @@ export function AccountPanel({ user, isPremium, onSignIn, onSignUp, onSignOut, o
           </p>
         </div>
 
-        {/* Mode tabs */}
         <div className="auth-mode-tabs" role="tablist">
           <button
             aria-selected={mode === 'signin'}
@@ -168,7 +165,6 @@ export function AccountPanel({ user, isPremium, onSignIn, onSignUp, onSignOut, o
     );
   }
 
-  // ── Signed in ─────────────────────────────────────────────────
   return (
     <section className="account-panel" aria-label="Account">
       <div className="account-user-card">

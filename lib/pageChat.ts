@@ -1,13 +1,12 @@
 const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
 
-/** Chars to send to the model — ~3 000 tokens, keeps cost low. */
+/** ~3 000 tokens, keeps cost low. */
 const PAGE_TEXT_LIMIT = 12_000;
 
 function getEnvValue(name: string): string | undefined {
   return (import.meta.env as Record<string, string | undefined>)[name];
 }
 
-/** One conversational turn, in OpenAI chat-completions shape. */
 export type ChatTurn = { role: 'user' | 'assistant'; content: string };
 
 function buildSystemPrompt(pageText: string): string {
@@ -38,18 +37,10 @@ function buildSystemPrompt(pageText: string): string {
   );
 }
 
-/** Light reminder folded into the latest user turn to keep gpt-4o-mini compliant with the link format. */
+/** Folded into the latest user turn to keep gpt-4o-mini compliant with the link format. */
 const CITATION_REMINDER =
   '\n\n(Reminder: cite page text only as [text](#scroll-quote=verbatim text) — never plain quotation marks.)';
 
-/**
- * Stream a page-context chat completion from OpenAI, with conversational memory.
- *
- * @param pageText   Extracted `innerText` of the active tab (may be empty for restricted pages).
- * @param history    Recent conversation turns (already trimmed by the caller), oldest → newest.
- * @param onChunk    Called with each text delta as it arrives.
- * @param signal     Optional AbortSignal to cancel mid-stream.
- */
 export async function streamPageChat(
   pageText: string,
   history: ChatTurn[],
@@ -61,7 +52,6 @@ export async function streamPageChat(
 
   const model = getEnvValue('WXT_OPENAI_MODEL') ?? 'gpt-4o-mini';
 
-  // Append the citation reminder to the most recent user turn only.
   const apiHistory = history.map((turn, i) =>
     i === history.length - 1 && turn.role === 'user'
       ? { ...turn, content: turn.content + CITATION_REMINDER }
@@ -91,7 +81,7 @@ export async function streamPageChat(
     let detail = '';
     try {
       detail = await response.text();
-    } catch { /* ignore */ }
+    } catch {}
     throw new Error(
       `OpenAI returned ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
     );
@@ -123,9 +113,7 @@ export async function streamPageChat(
           };
           const delta = json.choices?.[0]?.delta?.content;
           if (typeof delta === 'string' && delta) onChunk(delta);
-        } catch {
-          // skip malformed SSE chunks
-        }
+        } catch {}
       }
     }
   } finally {

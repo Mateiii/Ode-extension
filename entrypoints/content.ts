@@ -3,17 +3,16 @@ import { scrapePageMetadata } from '@/lib/pageMetadata';
 export default defineContentScript({
   matches: ['http://*/*', 'https://*/*'],
   main() {
-    // Guard: abort on non-HTML documents (XML feeds, S3 error pages, JSON APIs,
-    // plain-text responses). These have no <body> to inject into and no user
-    // selections we care about. Without this check, the toolbar's text nodes
-    // pollute the raw document tree and corrupt clipboard copies.
+    // Abort on non-HTML documents (XML feeds, S3 error pages, JSON APIs,
+    // plain-text responses): no <body> to inject into, and the toolbar's
+    // text nodes would corrupt the raw document tree / clipboard copies.
     const contentType = document.contentType?.toLowerCase() ?? '';
     const rootTag = document.documentElement?.nodeName ?? '';
     if (
-      rootTag !== 'HTML' ||                   // XML / SVG / S3 error root ≠ "HTML"
-      contentType.includes('xml') ||          // text/xml, application/xml, image/svg+xml
-      contentType.includes('json') ||         // application/json
-      contentType.includes('text/plain')      // raw .txt responses
+      rootTag !== 'HTML' ||
+      contentType.includes('xml') ||
+      contentType.includes('json') ||
+      contentType.includes('text/plain')
     ) {
       return;
     }
@@ -140,8 +139,6 @@ export default defineContentScript({
         return;
       }
 
-      // Position before revealing — element is display:flex but opacity:0, so
-      // getBoundingClientRect returns real dimensions without a visual flash.
       const barRect = actionBar.getBoundingClientRect();
       const top = Math.max(8, rect.top - barRect.height - 10);
       const left = Math.min(

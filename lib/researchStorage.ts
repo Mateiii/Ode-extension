@@ -213,7 +213,7 @@ export async function moveQuickNote(id: string, folderId: string) {
   const notes = await getQuickNotes();
   await storageSet({
     [QUICK_NOTES_STORAGE_KEY]: notes.map((note) =>
-      note.id === id ? { ...note, folderId } : note,
+      note.id === id ? { ...note, folderId, syncedToCloud: false } : note,
     ),
   });
 }
@@ -228,28 +228,60 @@ export async function updateQuickNote(id: string, updates: { text: string; custo
 }
 
 export async function markNoteAsSynced(id: string): Promise<void> {
+  await markNotesAsSynced([id]);
+}
+
+export async function markNotesAsSynced(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const idSet = new Set(ids);
   const notes = await getQuickNotes();
   await storageSet({
     [QUICK_NOTES_STORAGE_KEY]: notes.map((n) =>
-      n.id === id ? { ...n, syncedToCloud: true } : n,
+      idSet.has(n.id) ? { ...n, syncedToCloud: true } : n,
     ),
   });
 }
 
-/**
- * Merges notes fetched from Supabase into local storage.
- * Notes that already exist locally (by ID) are left untouched — local edits take priority.
- * New notes from the cloud are prepended.
- * Writing to storage triggers the chrome.storage.onChanged listener in App.tsx,
- * which updates the React notes state automatically.
- */
-export async function mergeCloudNotes(cloudNotes: QuickNote[]): Promise<void> {
-  if (cloudNotes.length === 0) return;
-  const local = await getQuickNotes();
+// Local projects win on ID conflict.
+export async function mergeCloudProjects(cloudProjects: Project[]): Promise<number> {
+  if (cloudProjects.length === 0) return 0;
+  const local = await getProjects();
+  const localIds = new Set(local.map((p) => p.id));
+  const incoming = cloudProjects.filter((p) => !localIds.has(p.id));
+  if (incoming.length === 0) return 0;
+  await storageSet({ [PROJECTS_STORAGE_KEY]: [...local, ...incoming] });
+  return incoming.length;
+}
+
+// Local folders win on ID conflict; folders pointing at unknown projects are
+// skipped (their project row should have been merged first).
+export async function mergeCloudFolders(cloudFolders: NoteFolder[]): Promise<number> {
+  if (cloudFolders.length === 0) return 0;
+  const [local, projects] = await Promise.all([getNoteFolders(), getProjects()]);
+  const localIds = new Set(local.map((f) => f.id));
+  const projectIds = new Set(projects.map((p) => p.id));
+  const incoming = cloudFolders.filter((f) => !localIds.has(f.id) && projectIds.has(f.projectId));
+  if (incoming.length === 0) return 0;
+  await storageSet({ [NOTE_FOLDERS_STORAGE_KEY]: [...local, ...incoming] });
+  return incoming.length;
+}
+
+// Notes that already exist locally (by ID) are left untouched — local edits take priority.
+export async function mergeCloudNotes(cloudNotes: QuickNote[]): Promise<number> {
+  if (cloudNotes.length === 0) return 0;
+  const [local, folders] = await Promise.all([getQuickNotes(), getNoteFolders()]);
   const localIds = new Set(local.map((n) => n.id));
-  const incoming = cloudNotes.filter((n) => !localIds.has(n.id));
-  if (incoming.length === 0) return;
+  const folderIds = new Set(folders.map((f) => f.id));
+  const incoming = cloudNotes
+    .filter((n) => !localIds.has(n.id))
+    // A note can arrive pointing at a folder this browser has never seen; reassign
+    // it to the General folder, otherwise the project filter hides it.
+    .map((n) =>
+      folderIds.has(n.folderId ?? DEFAULT_FOLDER_ID) ? n : { ...n, folderId: DEFAULT_FOLDER_ID },
+    );
+  if (incoming.length === 0) return 0;
   await storageSet({ [QUICK_NOTES_STORAGE_KEY]: [...incoming, ...local] });
+  return incoming.length;
 }
 
 export async function pinQuickNote(id: string, pinned: boolean) {
@@ -271,8 +303,7 @@ export async function swapQuickNotes(idA: string, idB: string) {
   await storageSet({ [QUICK_NOTES_STORAGE_KEY]: next });
 }
 
-// Deletes a folder and reassigns its notes to the project's default folder.
-// A project's default folder cannot be deleted via this path.
+// Reassigns the folder's notes to the project's default folder; the default folder itself can't be deleted this way.
 export async function deleteNoteFolder(id: string) {
   if (id === DEFAULT_FOLDER_ID) return;
 
@@ -293,13 +324,13 @@ export async function deleteNoteFolder(id: string) {
   await storageSet({
     [NOTE_FOLDERS_STORAGE_KEY]: folders.filter((f) => f.id !== id),
     [QUICK_NOTES_STORAGE_KEY]: notes.map((note) =>
-      (note.folderId || DEFAULT_FOLDER_ID) === id ? { ...note, folderId: fallbackFolderId } : note,
+      (note.folderId || DEFAULT_FOLDER_ID) === id
+        ? { ...note, folderId: fallbackFolderId, syncedToCloud: false }
+        : note,
     ),
   });
 }
 
-// Migration: creates a Sources folder for any project that doesn't have one yet.
-// Returns up-to-date projects + folders so callers avoid a second fetch.
 export async function ensureProjectSourcesFolders(): Promise<{ projects: Project[]; folders: NoteFolder[] }> {
   let [projects, folders] = await Promise.all([getProjects(), getNoteFolders()]);
 

@@ -11,13 +11,12 @@ function getEnvValue(name: string) {
   return env[name];
 }
 
-// Strip the boilerplate that article/journal pages put ahead of the real
+// Strips boilerplate that article/journal pages put ahead of the real
 // content: DOI fragments, author lists with affiliation superscripts, PMCID/
-// PMID lines, and nav labels. Also jump to the Abstract/Introduction when present.
+// PMID lines, and nav labels. Also jumps to the Abstract/Introduction when present.
 function cleanForNotes(text: string): string {
   let t = text.replace(/\s+/g, ' ').trim();
 
-  // If a content marker appears near the top, start from it.
   const marker = t.search(/\b(Abstract|Introduction|Summary)\b/);
   if (marker > 0 && marker < 2500) {
     t = t.slice(marker).replace(/^(Abstract|Introduction|Summary)\b[:.\s]*/i, '');
@@ -33,8 +32,7 @@ function cleanForNotes(text: string): string {
 }
 
 // A "sentence" is boilerplate if a large share of its tokens are bare numbers
-// or single letters (affiliation markers, citation ids), or it is mostly an
-// author list. Used to drop junk from the extractive fallback.
+// or single letters (affiliation markers, citation ids).
 function looksLikeBoilerplate(sentence: string): boolean {
   const tokens = sentence.split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return true;
@@ -71,7 +69,6 @@ export async function summarizePageNotes(
     return extractiveFallback(text);
   }
 
-  // Clean boilerplate, then truncate to ~6000 chars to stay within token budget
   const cleaned = cleanForNotes(text);
   const truncated = cleaned.length > 6000 ? `${cleaned.slice(0, 6000)}…` : cleaned;
 

@@ -48,6 +48,14 @@ declare const chrome: {
       set(items: Record<string, unknown>, callback?: () => void): void;
       remove(keys: string[] | string, callback?: () => void): void;
     };
+    session: {
+      get(
+        keys: string[] | string | Record<string, unknown> | null,
+        callback: (items: Record<string, unknown>) => void,
+      ): void;
+      set(items: Record<string, unknown>, callback?: () => void): void;
+      remove(keys: string[] | string, callback?: () => void): void;
+    };
     onChanged: {
       addListener(
         listener: (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void,
