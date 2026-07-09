@@ -26,7 +26,6 @@ function isPlausibleAuthor(text: string): boolean {
 }
 
 function scrapeAuthor(): string {
-  // 1. Meta tags — fastest and most reliable
   const fromMeta = getMetaContent([
     'meta[name="author"]',
     'meta[property="article:author"]',
@@ -41,7 +40,6 @@ function scrapeAuthor(): string {
   ]);
   if (fromMeta) return fromMeta;
 
-  // 2. JSON-LD structured data
   for (const script of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
     try {
       const data: unknown = JSON.parse(script.textContent ?? '');
@@ -61,19 +59,15 @@ function scrapeAuthor(): string {
         }
         if (name && isPlausibleAuthor(name)) return name;
       }
-    } catch {
-      // malformed JSON-LD — skip
-    }
+    } catch {}
   }
 
-  // 3. rel="author" anchor
   const relAuthor = document.querySelector<HTMLAnchorElement>('a[rel="author"]');
   if (relAuthor) {
     const text = cleanAuthorText(relAuthor.textContent?.trim() ?? '');
     if (isPlausibleAuthor(text)) return text;
   }
 
-  // 4. Microdata itemprop="author"
   const itemAuthor = document.querySelector<HTMLElement>('[itemprop="author"]');
   if (itemAuthor) {
     const nameEl = itemAuthor.querySelector<HTMLElement>('[itemprop="name"]');
@@ -81,7 +75,6 @@ function scrapeAuthor(): string {
     if (isPlausibleAuthor(text)) return text;
   }
 
-  // 5. Common byline / author DOM patterns
   const bylineSelectors = [
     '[class*="byline"] [class*="author"]',
     '[class*="byline"] [class*="name"]',
@@ -101,9 +94,7 @@ function scrapeAuthor(): string {
       if (!el) continue;
       const text = cleanAuthorText(el.textContent?.replace(/\s+/g, ' ').trim() ?? '');
       if (isPlausibleAuthor(text)) return text;
-    } catch {
-      // ignore invalid selectors
-    }
+    } catch {}
   }
 
   return '';

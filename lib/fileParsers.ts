@@ -26,7 +26,6 @@ export async function extractPptxText(buffer: ArrayBuffer): Promise<string> {
   const slideTexts = await Promise.all(
     slideFiles.map(async (name) => {
       const xml = await zip.files[name].async('string');
-      // Extract text from <a:t> elements (DrawingML text runs)
       const matches = xml.match(/<a:t[^>]*>([^<]*)<\/a:t>/g) ?? [];
       return matches.map((m) => m.replace(/<[^>]+>/g, '')).join(' ');
     }),

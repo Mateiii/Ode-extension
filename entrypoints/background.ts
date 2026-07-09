@@ -86,7 +86,6 @@ export default defineBackground(() => {
   chrome.runtime.onInstalled.addListener(() => {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
-    // Re-create context menu items cleanly on every install / update.
     chrome.contextMenus.removeAll(() => {
       chrome.contextMenus.create({
         id: 'ode-save-note',
@@ -220,8 +219,6 @@ export default defineBackground(() => {
       return true;
     }
 
-    // Sidepanel chat requests raw page text via the background so the
-    // scripting call runs in the service-worker context (proven reliable).
     if (message.type === 'request-page-text') {
       getActiveTab()
         .then((tab) => {
@@ -232,7 +229,7 @@ export default defineBackground(() => {
         })
         .then((result) => sendResponse(result))
         .catch(() => sendResponse({ text: '' }));
-      return true; // keep message channel open for async response
+      return true;
     }
 
     if (message.type === 'selection-context') {
@@ -247,8 +244,6 @@ export default defineBackground(() => {
     }
   });
 
-  // Context menu — right-click actions on selected text, including inside
-  // Chrome's native PDF viewer where content scripts cannot be injected.
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     const text = info.selectionText?.trim();
     if (!text) return;
@@ -257,7 +252,6 @@ export default defineBackground(() => {
     const url   = tab?.url ?? info.pageUrl;
     const title = tab?.title;
 
-    // ── Save to Notes ────────────────────────────────────────────────────────
     if (info.menuItemId === 'ode-save-note') {
       const msg = {
         type: 'sidepanel-selection-action' as const,
@@ -273,11 +267,9 @@ export default defineBackground(() => {
       return;
     }
 
-    // ── Fact Check ───────────────────────────────────────────────────────────
     if (info.menuItemId === 'ode-fact-check') {
       const FACT_CHECK_MAX_LENGTH = 400;
 
-      // Base shape the sidepanel expects for a fact-check result.
       const resultBase = {
         type: 'sidepanel-fact-check-result' as const,
         text, title, url,
@@ -321,10 +313,7 @@ export default defineBackground(() => {
       return;
     }
 
-    // ── Cite ─────────────────────────────────────────────────────────────────
     if (info.menuItemId === 'ode-cite') {
-      // No content-script metadata available for PDF / native viewer pages;
-      // formatCitation gracefully falls back to title + url.
       const fallback = { title, url };
       chrome.storage.local.get('appSettings', (result) => {
         const stored = (result['appSettings'] ?? {}) as { citationStyle?: string };

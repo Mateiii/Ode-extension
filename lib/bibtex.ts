@@ -1,10 +1,5 @@
 import { getNoteTitle, type QuickNote } from '@/lib/researchStorage';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Escape characters that are special in BibTeX field values. */
 function bbtEscape(s: string): string {
   return s
     .replace(/\\/g, '\\\\')
@@ -15,7 +10,6 @@ function bbtEscape(s: string): string {
     .replace(/_/g, '\\_');
 }
 
-/** Derive the year string from an ISO date string, falling back to the note's createdAt. */
 function getYear(iso: string | undefined, fallbackIso: string): string {
   const candidates = [iso, fallbackIso].filter(Boolean) as string[];
   for (const c of candidates) {
@@ -25,7 +19,6 @@ function getYear(iso: string | undefined, fallbackIso: string): string {
   return 'n.d.';
 }
 
-/** Build a BibTeX citation key from author, year, and title. */
 function buildKey(author: string, year: string, title: string): string {
   const lastName = author
     ? (author.split(/[\s,]+/).filter(Boolean).pop() ?? author)
@@ -42,15 +35,7 @@ function buildKey(author: string, year: string, title: string): string {
   return `${lastName}${year}_${titleWord}`;
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Format a single QuickNote as a BibTeX `@misc` entry.
- * The citation key is NOT deduplicated here; use `formatBibtexBundle`
- * when exporting multiple notes to get unique keys.
- */
+/** Citation key is not deduplicated; use formatBibtexBundle for unique keys across multiple notes. */
 export function formatBibtex(note: QuickNote, keyOverride?: string): string {
   const author = (note.metadata?.author ?? '').trim();
   const rawTitle = getNoteTitle(note);
@@ -66,7 +51,6 @@ export function formatBibtex(note: QuickNote, keyOverride?: string): string {
 
   const key = keyOverride ?? buildKey(author, year, rawTitle);
 
-  // Build field list; only include non-empty fields
   const fields: string[] = [];
   if (author) fields.push(`  author       = {${bbtEscape(author)}}`);
   fields.push(`  title        = {${title}}`);
@@ -81,10 +65,7 @@ export function formatBibtex(note: QuickNote, keyOverride?: string): string {
   return `@misc{${key},\n${fields.join(',\n')}\n}`;
 }
 
-/**
- * Format an array of QuickNotes as a `.bbt` file content string.
- * Duplicate citation keys are resolved by appending `_b`, `_c`, … suffixes.
- */
+/** Duplicate citation keys are resolved by appending _b, _c, … suffixes. */
 export function formatBibtexBundle(notes: QuickNote[]): string {
   const seen = new Map<string, number>();
 
@@ -96,7 +77,6 @@ export function formatBibtexBundle(notes: QuickNote[]): string {
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);
 
-    // First occurrence keeps the base key; subsequent ones get _b, _c, …
     const key = count === 0 ? base : `${base}_${String.fromCharCode(97 + count)}`;
 
     return formatBibtex(note, key);
